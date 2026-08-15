@@ -17,7 +17,7 @@ CXX           = g++
 DEFINES       = -DQT_NO_DEBUG -DQT_WIDGETS_LIB -DQT_GUI_LIB -DQT_CORE_LIB
 CFLAGS        = -pipe -Wall -Wextra -std=c99 $(shell pkg-config --cflags libwebsockets) -O2 -Wall -Wextra -D_REENTRANT -fPIC $(DEFINES)
 CXXFLAGS      = -pipe -Wall -Wextra -std=c++17 -O2 -std=gnu++1z -Wall -Wextra -D_REENTRANT -fPIC $(DEFINES)
-INCPATH       = -I. -I../include -I../src -I../onnxruntime-linux-x64-1.20.1/include -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I../build/gui -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++
+INCPATH       = -I. -I/home/stevew/test5/cw-skimmer/cw-skimmer/gui/../include -I../src -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I../build/gui -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++
 QMAKE         = /usr/lib/qt5/bin/qmake
 DEL_FILE      = rm -f
 CHK_DIR_EXISTS= test -d
@@ -37,10 +37,10 @@ MOVE          = mv -f
 TAR           = tar -cf
 COMPRESS      = gzip -9f
 DISTNAME      = cw-skimmer-gui1.0.0
-DISTDIR = /home/stevew/cw-skimmer/build/gui/cw-skimmer-gui1.0.0
+DISTDIR = /home/stevew/test5/cw-skimmer/cw-skimmer/build/gui/cw-skimmer-gui1.0.0
 LINK          = g++
-LFLAGS        = -Wl,-rpath,'$$ORIGIN/../onnxruntime-linux-x64-1.20.1/lib' -Wl,-O1
-LIBS          = $(SUBLIBS) -lm -lwebsockets -L/home/stevew/cw-skimmer/gui/../onnxruntime-linux-x64-1.20.1/lib -lonnxruntime /usr/lib/x86_64-linux-gnu/libQt5Widgets.so /usr/lib/x86_64-linux-gnu/libQt5Gui.so /usr/lib/x86_64-linux-gnu/libQt5Core.so -lGL -lpthread   
+LFLAGS        = -Wl,-O1
+LIBS          = $(SUBLIBS) -lm -lwebsockets /usr/lib/x86_64-linux-gnu/libQt5Widgets.so /usr/lib/x86_64-linux-gnu/libQt5Gui.so /usr/lib/x86_64-linux-gnu/libQt5Core.so -lGL -lpthread   
 AR            = ar cqs
 RANLIB        = 
 SED           = sed
@@ -64,7 +64,6 @@ SOURCES       = main_gui.cpp \
 		signaltracewindow.cpp \
 		thresholdmorsewindow.cpp \
 		maskmorsewindow.cpp \
-		deepcwmorsewindow.cpp \
 		multichanneldecoder.cpp \
 		../src/audio_processor.c \
 		../src/bayesian_tree.c \
@@ -81,8 +80,7 @@ SOURCES       = main_gui.cpp \
 		../src/logger.c \
 		../src/signal_analyzer.c \
 		../src/spot_reporter.c \
-		../src/tci_client.c \
-		../src/deepcw_engine.c ../build/gui/moc_mainwindow.cpp \
+		../src/tci_client.c ../build/gui/moc_mainwindow.cpp \
 		../build/gui/moc_spectrumwidget.cpp \
 		../build/gui/moc_decodewidget.cpp \
 		../build/gui/moc_signalswidget.cpp \
@@ -93,7 +91,6 @@ SOURCES       = main_gui.cpp \
 		../build/gui/moc_signaltracewindow.cpp \
 		../build/gui/moc_thresholdmorsewindow.cpp \
 		../build/gui/moc_maskmorsewindow.cpp \
-		../build/gui/moc_deepcwmorsewindow.cpp \
 		../build/gui/moc_multichanneldecoder.cpp
 OBJECTS       = ../build/gui/main_gui.o \
 		../build/gui/mainwindow.o \
@@ -107,7 +104,6 @@ OBJECTS       = ../build/gui/main_gui.o \
 		../build/gui/signaltracewindow.o \
 		../build/gui/thresholdmorsewindow.o \
 		../build/gui/maskmorsewindow.o \
-		../build/gui/deepcwmorsewindow.o \
 		../build/gui/multichanneldecoder.o \
 		../build/gui/audio_processor.o \
 		../build/gui/bayesian_tree.o \
@@ -125,7 +121,6 @@ OBJECTS       = ../build/gui/main_gui.o \
 		../build/gui/signal_analyzer.o \
 		../build/gui/spot_reporter.o \
 		../build/gui/tci_client.o \
-		../build/gui/deepcw_engine.o \
 		../build/gui/moc_mainwindow.o \
 		../build/gui/moc_spectrumwidget.o \
 		../build/gui/moc_decodewidget.o \
@@ -137,7 +132,6 @@ OBJECTS       = ../build/gui/main_gui.o \
 		../build/gui/moc_signaltracewindow.o \
 		../build/gui/moc_thresholdmorsewindow.o \
 		../build/gui/moc_maskmorsewindow.o \
-		../build/gui/moc_deepcwmorsewindow.o \
 		../build/gui/moc_multichanneldecoder.o
 DIST          = /usr/lib/x86_64-linux-gnu/qt5/mkspecs/features/spec_pre.prf \
 		/usr/lib/x86_64-linux-gnu/qt5/mkspecs/common/unix.conf \
@@ -240,7 +234,6 @@ DIST          = /usr/lib/x86_64-linux-gnu/qt5/mkspecs/features/spec_pre.prf \
 		signaltracewindow.h \
 		thresholdmorsewindow.h \
 		maskmorsewindow.h \
-		deepcwmorsewindow.h \
 		multichanneldecoder.h main_gui.cpp \
 		mainwindow.cpp \
 		spectrumwidget.cpp \
@@ -253,7 +246,6 @@ DIST          = /usr/lib/x86_64-linux-gnu/qt5/mkspecs/features/spec_pre.prf \
 		signaltracewindow.cpp \
 		thresholdmorsewindow.cpp \
 		maskmorsewindow.cpp \
-		deepcwmorsewindow.cpp \
 		multichanneldecoder.cpp \
 		../src/audio_processor.c \
 		../src/bayesian_tree.c \
@@ -270,8 +262,7 @@ DIST          = /usr/lib/x86_64-linux-gnu/qt5/mkspecs/features/spec_pre.prf \
 		../src/logger.c \
 		../src/signal_analyzer.c \
 		../src/spot_reporter.c \
-		../src/tci_client.c \
-		../src/deepcw_engine.c
+		../src/tci_client.c
 QMAKE_TARGET  = cw-skimmer-gui
 DESTDIR       = ../bin/
 TARGET        = ../bin/cw-skimmer-gui
@@ -482,8 +473,8 @@ distdir: FORCE
 	@test -d $(DISTDIR) || mkdir -p $(DISTDIR)
 	$(COPY_FILE) --parents $(DIST) $(DISTDIR)/
 	$(COPY_FILE) --parents /usr/lib/x86_64-linux-gnu/qt5/mkspecs/features/data/dummy.cpp $(DISTDIR)/
-	$(COPY_FILE) --parents mainwindow.h spectrumwidget.h decodewidget.h signalswidget.h spotswidget.h settingsdialog.h logwidget.h detectorworker.h signaltracewindow.h thresholdmorsewindow.h maskmorsewindow.h deepcwmorsewindow.h multichanneldecoder.h $(DISTDIR)/
-	$(COPY_FILE) --parents main_gui.cpp mainwindow.cpp spectrumwidget.cpp decodewidget.cpp signalswidget.cpp spotswidget.cpp settingsdialog.cpp logwidget.cpp detectorworker.cpp signaltracewindow.cpp thresholdmorsewindow.cpp maskmorsewindow.cpp deepcwmorsewindow.cpp multichanneldecoder.cpp ../src/audio_processor.c ../src/bayesian_tree.c ../src/config.c ../src/cw_decoder.c ../src/ditdah_decoder.c ../src/decode_worker.c ../src/cw_keying_detector.c ../src/cw_message_validator.c ../src/cw_capture.c ../src/cw_detector.c ../src/cwskimmer_api.c ../src/perf_profile.c ../src/logger.c ../src/signal_analyzer.c ../src/spot_reporter.c ../src/tci_client.c ../src/deepcw_engine.c $(DISTDIR)/
+	$(COPY_FILE) --parents mainwindow.h spectrumwidget.h decodewidget.h signalswidget.h spotswidget.h settingsdialog.h logwidget.h detectorworker.h signaltracewindow.h thresholdmorsewindow.h maskmorsewindow.h multichanneldecoder.h $(DISTDIR)/
+	$(COPY_FILE) --parents main_gui.cpp mainwindow.cpp spectrumwidget.cpp decodewidget.cpp signalswidget.cpp spotswidget.cpp settingsdialog.cpp logwidget.cpp detectorworker.cpp signaltracewindow.cpp thresholdmorsewindow.cpp maskmorsewindow.cpp multichanneldecoder.cpp ../src/audio_processor.c ../src/bayesian_tree.c ../src/config.c ../src/cw_decoder.c ../src/ditdah_decoder.c ../src/decode_worker.c ../src/cw_keying_detector.c ../src/cw_message_validator.c ../src/cw_capture.c ../src/cw_detector.c ../src/cwskimmer_api.c ../src/perf_profile.c ../src/logger.c ../src/signal_analyzer.c ../src/spot_reporter.c ../src/tci_client.c $(DISTDIR)/
 
 
 clean: compiler_clean 
@@ -515,77 +506,72 @@ compiler_moc_predefs_clean:
 ../build/gui/moc_predefs.h: /usr/lib/x86_64-linux-gnu/qt5/mkspecs/features/data/dummy.cpp
 	g++ -pipe -Wall -Wextra -std=c++17 -O2 -std=gnu++1z -Wall -Wextra -dM -E -o ../build/gui/moc_predefs.h /usr/lib/x86_64-linux-gnu/qt5/mkspecs/features/data/dummy.cpp
 
-compiler_moc_header_make_all: ../build/gui/moc_mainwindow.cpp ../build/gui/moc_spectrumwidget.cpp ../build/gui/moc_decodewidget.cpp ../build/gui/moc_signalswidget.cpp ../build/gui/moc_spotswidget.cpp ../build/gui/moc_settingsdialog.cpp ../build/gui/moc_logwidget.cpp ../build/gui/moc_detectorworker.cpp ../build/gui/moc_signaltracewindow.cpp ../build/gui/moc_thresholdmorsewindow.cpp ../build/gui/moc_maskmorsewindow.cpp ../build/gui/moc_deepcwmorsewindow.cpp ../build/gui/moc_multichanneldecoder.cpp
+compiler_moc_header_make_all: ../build/gui/moc_mainwindow.cpp ../build/gui/moc_spectrumwidget.cpp ../build/gui/moc_decodewidget.cpp ../build/gui/moc_signalswidget.cpp ../build/gui/moc_spotswidget.cpp ../build/gui/moc_settingsdialog.cpp ../build/gui/moc_logwidget.cpp ../build/gui/moc_detectorworker.cpp ../build/gui/moc_signaltracewindow.cpp ../build/gui/moc_thresholdmorsewindow.cpp ../build/gui/moc_maskmorsewindow.cpp ../build/gui/moc_multichanneldecoder.cpp
 compiler_moc_header_clean:
-	-$(DEL_FILE) ../build/gui/moc_mainwindow.cpp ../build/gui/moc_spectrumwidget.cpp ../build/gui/moc_decodewidget.cpp ../build/gui/moc_signalswidget.cpp ../build/gui/moc_spotswidget.cpp ../build/gui/moc_settingsdialog.cpp ../build/gui/moc_logwidget.cpp ../build/gui/moc_detectorworker.cpp ../build/gui/moc_signaltracewindow.cpp ../build/gui/moc_thresholdmorsewindow.cpp ../build/gui/moc_maskmorsewindow.cpp ../build/gui/moc_deepcwmorsewindow.cpp ../build/gui/moc_multichanneldecoder.cpp
+	-$(DEL_FILE) ../build/gui/moc_mainwindow.cpp ../build/gui/moc_spectrumwidget.cpp ../build/gui/moc_decodewidget.cpp ../build/gui/moc_signalswidget.cpp ../build/gui/moc_spotswidget.cpp ../build/gui/moc_settingsdialog.cpp ../build/gui/moc_logwidget.cpp ../build/gui/moc_detectorworker.cpp ../build/gui/moc_signaltracewindow.cpp ../build/gui/moc_thresholdmorsewindow.cpp ../build/gui/moc_maskmorsewindow.cpp ../build/gui/moc_multichanneldecoder.cpp
 ../build/gui/moc_mainwindow.cpp: mainwindow.h \
 		detectorworker.h \
 		../src/cwskimmer_api.h \
 		../build/gui/moc_predefs.h \
 		/usr/lib/qt5/bin/moc
-	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/cw-skimmer/gui -I/home/stevew/cw-skimmer/include -I/home/stevew/cw-skimmer/src -I/home/stevew/cw-skimmer/onnxruntime-linux-x64-1.20.1/include -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include mainwindow.h -o ../build/gui/moc_mainwindow.cpp
+	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/test5/cw-skimmer/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/test5/cw-skimmer/cw-skimmer/gui -I/home/stevew/test5/cw-skimmer/cw-skimmer/include -I/home/stevew/test5/cw-skimmer/cw-skimmer/src -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include mainwindow.h -o ../build/gui/moc_mainwindow.cpp
 
 ../build/gui/moc_spectrumwidget.cpp: spectrumwidget.h \
 		../build/gui/moc_predefs.h \
 		/usr/lib/qt5/bin/moc
-	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/cw-skimmer/gui -I/home/stevew/cw-skimmer/include -I/home/stevew/cw-skimmer/src -I/home/stevew/cw-skimmer/onnxruntime-linux-x64-1.20.1/include -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include spectrumwidget.h -o ../build/gui/moc_spectrumwidget.cpp
+	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/test5/cw-skimmer/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/test5/cw-skimmer/cw-skimmer/gui -I/home/stevew/test5/cw-skimmer/cw-skimmer/include -I/home/stevew/test5/cw-skimmer/cw-skimmer/src -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include spectrumwidget.h -o ../build/gui/moc_spectrumwidget.cpp
 
 ../build/gui/moc_decodewidget.cpp: decodewidget.h \
 		multichanneldecoder.h \
 		../build/gui/moc_predefs.h \
 		/usr/lib/qt5/bin/moc
-	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/cw-skimmer/gui -I/home/stevew/cw-skimmer/include -I/home/stevew/cw-skimmer/src -I/home/stevew/cw-skimmer/onnxruntime-linux-x64-1.20.1/include -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include decodewidget.h -o ../build/gui/moc_decodewidget.cpp
+	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/test5/cw-skimmer/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/test5/cw-skimmer/cw-skimmer/gui -I/home/stevew/test5/cw-skimmer/cw-skimmer/include -I/home/stevew/test5/cw-skimmer/cw-skimmer/src -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include decodewidget.h -o ../build/gui/moc_decodewidget.cpp
 
 ../build/gui/moc_signalswidget.cpp: signalswidget.h \
 		../build/gui/moc_predefs.h \
 		/usr/lib/qt5/bin/moc
-	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/cw-skimmer/gui -I/home/stevew/cw-skimmer/include -I/home/stevew/cw-skimmer/src -I/home/stevew/cw-skimmer/onnxruntime-linux-x64-1.20.1/include -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include signalswidget.h -o ../build/gui/moc_signalswidget.cpp
+	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/test5/cw-skimmer/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/test5/cw-skimmer/cw-skimmer/gui -I/home/stevew/test5/cw-skimmer/cw-skimmer/include -I/home/stevew/test5/cw-skimmer/cw-skimmer/src -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include signalswidget.h -o ../build/gui/moc_signalswidget.cpp
 
 ../build/gui/moc_spotswidget.cpp: spotswidget.h \
 		../build/gui/moc_predefs.h \
 		/usr/lib/qt5/bin/moc
-	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/cw-skimmer/gui -I/home/stevew/cw-skimmer/include -I/home/stevew/cw-skimmer/src -I/home/stevew/cw-skimmer/onnxruntime-linux-x64-1.20.1/include -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include spotswidget.h -o ../build/gui/moc_spotswidget.cpp
+	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/test5/cw-skimmer/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/test5/cw-skimmer/cw-skimmer/gui -I/home/stevew/test5/cw-skimmer/cw-skimmer/include -I/home/stevew/test5/cw-skimmer/cw-skimmer/src -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include spotswidget.h -o ../build/gui/moc_spotswidget.cpp
 
 ../build/gui/moc_settingsdialog.cpp: settingsdialog.h \
 		../build/gui/moc_predefs.h \
 		/usr/lib/qt5/bin/moc
-	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/cw-skimmer/gui -I/home/stevew/cw-skimmer/include -I/home/stevew/cw-skimmer/src -I/home/stevew/cw-skimmer/onnxruntime-linux-x64-1.20.1/include -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include settingsdialog.h -o ../build/gui/moc_settingsdialog.cpp
+	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/test5/cw-skimmer/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/test5/cw-skimmer/cw-skimmer/gui -I/home/stevew/test5/cw-skimmer/cw-skimmer/include -I/home/stevew/test5/cw-skimmer/cw-skimmer/src -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include settingsdialog.h -o ../build/gui/moc_settingsdialog.cpp
 
 ../build/gui/moc_logwidget.cpp: logwidget.h \
 		../build/gui/moc_predefs.h \
 		/usr/lib/qt5/bin/moc
-	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/cw-skimmer/gui -I/home/stevew/cw-skimmer/include -I/home/stevew/cw-skimmer/src -I/home/stevew/cw-skimmer/onnxruntime-linux-x64-1.20.1/include -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include logwidget.h -o ../build/gui/moc_logwidget.cpp
+	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/test5/cw-skimmer/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/test5/cw-skimmer/cw-skimmer/gui -I/home/stevew/test5/cw-skimmer/cw-skimmer/include -I/home/stevew/test5/cw-skimmer/cw-skimmer/src -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include logwidget.h -o ../build/gui/moc_logwidget.cpp
 
 ../build/gui/moc_detectorworker.cpp: detectorworker.h \
 		../src/cwskimmer_api.h \
 		../build/gui/moc_predefs.h \
 		/usr/lib/qt5/bin/moc
-	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/cw-skimmer/gui -I/home/stevew/cw-skimmer/include -I/home/stevew/cw-skimmer/src -I/home/stevew/cw-skimmer/onnxruntime-linux-x64-1.20.1/include -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include detectorworker.h -o ../build/gui/moc_detectorworker.cpp
+	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/test5/cw-skimmer/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/test5/cw-skimmer/cw-skimmer/gui -I/home/stevew/test5/cw-skimmer/cw-skimmer/include -I/home/stevew/test5/cw-skimmer/cw-skimmer/src -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include detectorworker.h -o ../build/gui/moc_detectorworker.cpp
 
 ../build/gui/moc_signaltracewindow.cpp: signaltracewindow.h \
 		../build/gui/moc_predefs.h \
 		/usr/lib/qt5/bin/moc
-	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/cw-skimmer/gui -I/home/stevew/cw-skimmer/include -I/home/stevew/cw-skimmer/src -I/home/stevew/cw-skimmer/onnxruntime-linux-x64-1.20.1/include -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include signaltracewindow.h -o ../build/gui/moc_signaltracewindow.cpp
+	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/test5/cw-skimmer/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/test5/cw-skimmer/cw-skimmer/gui -I/home/stevew/test5/cw-skimmer/cw-skimmer/include -I/home/stevew/test5/cw-skimmer/cw-skimmer/src -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include signaltracewindow.h -o ../build/gui/moc_signaltracewindow.cpp
 
 ../build/gui/moc_thresholdmorsewindow.cpp: thresholdmorsewindow.h \
 		../build/gui/moc_predefs.h \
 		/usr/lib/qt5/bin/moc
-	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/cw-skimmer/gui -I/home/stevew/cw-skimmer/include -I/home/stevew/cw-skimmer/src -I/home/stevew/cw-skimmer/onnxruntime-linux-x64-1.20.1/include -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include thresholdmorsewindow.h -o ../build/gui/moc_thresholdmorsewindow.cpp
+	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/test5/cw-skimmer/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/test5/cw-skimmer/cw-skimmer/gui -I/home/stevew/test5/cw-skimmer/cw-skimmer/include -I/home/stevew/test5/cw-skimmer/cw-skimmer/src -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include thresholdmorsewindow.h -o ../build/gui/moc_thresholdmorsewindow.cpp
 
 ../build/gui/moc_maskmorsewindow.cpp: maskmorsewindow.h \
 		../build/gui/moc_predefs.h \
 		/usr/lib/qt5/bin/moc
-	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/cw-skimmer/gui -I/home/stevew/cw-skimmer/include -I/home/stevew/cw-skimmer/src -I/home/stevew/cw-skimmer/onnxruntime-linux-x64-1.20.1/include -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include maskmorsewindow.h -o ../build/gui/moc_maskmorsewindow.cpp
-
-../build/gui/moc_deepcwmorsewindow.cpp: deepcwmorsewindow.h \
-		../build/gui/moc_predefs.h \
-		/usr/lib/qt5/bin/moc
-	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/cw-skimmer/gui -I/home/stevew/cw-skimmer/include -I/home/stevew/cw-skimmer/src -I/home/stevew/cw-skimmer/onnxruntime-linux-x64-1.20.1/include -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include deepcwmorsewindow.h -o ../build/gui/moc_deepcwmorsewindow.cpp
+	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/test5/cw-skimmer/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/test5/cw-skimmer/cw-skimmer/gui -I/home/stevew/test5/cw-skimmer/cw-skimmer/include -I/home/stevew/test5/cw-skimmer/cw-skimmer/src -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include maskmorsewindow.h -o ../build/gui/moc_maskmorsewindow.cpp
 
 ../build/gui/moc_multichanneldecoder.cpp: multichanneldecoder.h \
 		../build/gui/moc_predefs.h \
 		/usr/lib/qt5/bin/moc
-	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/cw-skimmer/gui -I/home/stevew/cw-skimmer/include -I/home/stevew/cw-skimmer/src -I/home/stevew/cw-skimmer/onnxruntime-linux-x64-1.20.1/include -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include multichanneldecoder.h -o ../build/gui/moc_multichanneldecoder.cpp
+	/usr/lib/qt5/bin/moc $(DEFINES) --include /home/stevew/test5/cw-skimmer/cw-skimmer/build/gui/moc_predefs.h -I/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -I/home/stevew/test5/cw-skimmer/cw-skimmer/gui -I/home/stevew/test5/cw-skimmer/cw-skimmer/include -I/home/stevew/test5/cw-skimmer/cw-skimmer/src -I/usr/include/x86_64-linux-gnu/qt5 -I/usr/include/x86_64-linux-gnu/qt5/QtWidgets -I/usr/include/x86_64-linux-gnu/qt5/QtGui -I/usr/include/x86_64-linux-gnu/qt5/QtCore -I/usr/include/c++/13 -I/usr/include/x86_64-linux-gnu/c++/13 -I/usr/include/c++/13/backward -I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/local/include -I/usr/include/x86_64-linux-gnu -I/usr/include multichanneldecoder.h -o ../build/gui/moc_multichanneldecoder.cpp
 
 compiler_moc_objc_header_make_all:
 compiler_moc_objc_header_clean:
@@ -653,11 +639,6 @@ compiler_clean: compiler_moc_predefs_clean compiler_moc_header_clean
 
 ../build/gui/maskmorsewindow.o: maskmorsewindow.cpp maskmorsewindow.h
 	$(CXX) -c $(CXXFLAGS) $(INCPATH) -o ../build/gui/maskmorsewindow.o maskmorsewindow.cpp
-
-../build/gui/deepcwmorsewindow.o: deepcwmorsewindow.cpp deepcwmorsewindow.h \
-		../src/deepcw_engine.h \
-		../src/logger.h
-	$(CXX) -c $(CXXFLAGS) $(INCPATH) -o ../build/gui/deepcwmorsewindow.o deepcwmorsewindow.cpp
 
 ../build/gui/multichanneldecoder.o: multichanneldecoder.cpp multichanneldecoder.h \
 		thresholdmorsewindow.h \
@@ -741,11 +722,6 @@ compiler_clean: compiler_moc_predefs_clean compiler_moc_header_clean
 		../src/logger.h
 	$(CC) -c $(CFLAGS) $(INCPATH) -o ../build/gui/tci_client.o ../src/tci_client.c
 
-../build/gui/deepcw_engine.o: ../src/deepcw_engine.c ../src/deepcw_engine.h \
-		../src/logger.h \
-		../onnxruntime-linux-x64-1.20.1/include/onnxruntime_c_api.h
-	$(CC) -c $(CFLAGS) $(INCPATH) -o ../build/gui/deepcw_engine.o ../src/deepcw_engine.c
-
 ../build/gui/moc_mainwindow.o: ../build/gui/moc_mainwindow.cpp 
 	$(CXX) -c $(CXXFLAGS) $(INCPATH) -o ../build/gui/moc_mainwindow.o ../build/gui/moc_mainwindow.cpp
 
@@ -778,9 +754,6 @@ compiler_clean: compiler_moc_predefs_clean compiler_moc_header_clean
 
 ../build/gui/moc_maskmorsewindow.o: ../build/gui/moc_maskmorsewindow.cpp 
 	$(CXX) -c $(CXXFLAGS) $(INCPATH) -o ../build/gui/moc_maskmorsewindow.o ../build/gui/moc_maskmorsewindow.cpp
-
-../build/gui/moc_deepcwmorsewindow.o: ../build/gui/moc_deepcwmorsewindow.cpp 
-	$(CXX) -c $(CXXFLAGS) $(INCPATH) -o ../build/gui/moc_deepcwmorsewindow.o ../build/gui/moc_deepcwmorsewindow.cpp
 
 ../build/gui/moc_multichanneldecoder.o: ../build/gui/moc_multichanneldecoder.cpp 
 	$(CXX) -c $(CXXFLAGS) $(INCPATH) -o ../build/gui/moc_multichanneldecoder.o ../build/gui/moc_multichanneldecoder.cpp

@@ -29,7 +29,6 @@ void config_defaults(config_t *config) {
     config->spot_enabled = 0;
     config->log_level = 1;  // INFO
     strcpy(config->log_file, "cw-skimmer.log");
-    strcpy(config->deepcw_model_path, "models/model.onnx");
     config->spectrum_span_hz = 0;  /* 0 = full-band wide (production default) */
     strcpy(config->tci_stream_mode, "iq");  /* iq | audio */
     config->multi_decode_channels = 1;
@@ -46,113 +45,6 @@ static char *trim_string(char *str) {
 
 static int config_file_exists(const char *path) {
     return access(path, R_OK) == 0;
-}
-
-static int config_path_is_absolute(const char *path) {
-    return path && path[0] == '/';
-}
-
-static void config_dirname(const char *path, char *out, size_t out_size) {
-    if (!path || !path[0]) {
-        snprintf(out, out_size, ".");
-        return;
-    }
-
-    snprintf(out, out_size, "%s", path);
-    char *slash = strrchr(out, '/');
-    if (slash) {
-        if (slash == out) {
-            out[1] = '\0';
-        } else {
-            *slash = '\0';
-        }
-    } else {
-        snprintf(out, out_size, ".");
-    }
-}
-
-static int config_get_exe_dir(char *out, size_t out_size) {
-    char exe[PATH_MAX];
-    ssize_t exe_len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-    char *slash;
-
-    if (exe_len <= 0) {
-        return -1;
-    }
-
-    exe[exe_len] = '\0';
-    slash = strrchr(exe, '/');
-    if (!slash) {
-        return -1;
-    }
-
-    *slash = '\0';
-    snprintf(out, out_size, "%s", exe);
-    return 0;
-}
-
-static int config_try_resolve_path(const char *base_dir, const char *rel_path,
-                                   char *out, size_t out_size) {
-    char candidate[PATH_MAX];
-    char resolved[PATH_MAX];
-    char base_resolved[PATH_MAX];
-    const char *base = base_dir;
-
-    if (!base_dir || !rel_path || !rel_path[0]) {
-        return -1;
-    }
-
-    if (realpath(base_dir, base_resolved)) {
-        base = base_resolved;
-    }
-
-    if (snprintf(candidate, sizeof(candidate), "%s/%s", base, rel_path) >= (int)sizeof(candidate)) {
-        return -1;
-    }
-
-    if (realpath(candidate, resolved) && access(resolved, R_OK) == 0) {
-        snprintf(out, out_size, "%s", resolved);
-        return 0;
-    }
-
-    return -1;
-}
-
-static void config_resolve_deepcw_model(config_t *config, const char *config_path) {
-    char resolved[PATH_MAX];
-    char base_dir[PATH_MAX];
-    char exe_dir[PATH_MAX];
-    const char *rel = config->deepcw_model_path;
-
-    if (!rel || !rel[0] || config_path_is_absolute(rel)) {
-        return;
-    }
-
-    if (config_path && config_path[0]) {
-        config_dirname(config_path, base_dir, sizeof(base_dir));
-        if (config_try_resolve_path(base_dir, rel, resolved, sizeof(resolved)) == 0) {
-            snprintf(config->deepcw_model_path, sizeof(config->deepcw_model_path), "%s", resolved);
-            LOG_INFO("Resolved DeepCW model path: %s", config->deepcw_model_path);
-            return;
-        }
-    }
-
-    if (config_get_exe_dir(exe_dir, sizeof(exe_dir)) == 0) {
-        if (config_try_resolve_path(exe_dir, rel, resolved, sizeof(resolved)) == 0) {
-            snprintf(config->deepcw_model_path, sizeof(config->deepcw_model_path), "%s", resolved);
-            LOG_INFO("Resolved DeepCW model path: %s", config->deepcw_model_path);
-            return;
-        }
-
-        snprintf(base_dir, sizeof(base_dir), "%s/..", exe_dir);
-        if (config_try_resolve_path(base_dir, rel, resolved, sizeof(resolved)) == 0) {
-            snprintf(config->deepcw_model_path, sizeof(config->deepcw_model_path), "%s", resolved);
-            LOG_INFO("Resolved DeepCW model path: %s", config->deepcw_model_path);
-            return;
-        }
-    }
-
-    LOG_WARN("DeepCW model not found at configured path: %s", rel);
 }
 
 int config_load(const char *path, config_t *config) {
@@ -190,7 +82,6 @@ int config_load(const char *path, config_t *config) {
         else if (strcmp(key, "spot_enabled") == 0) config->spot_enabled = atoi(value) ? 1 : 0;
         else if (strcmp(key, "log_level") == 0) config->log_level = atoi(value);
         else if (strcmp(key, "log_file") == 0) strcpy(config->log_file, value);
-        else if (strcmp(key, "deepcw_model_path") == 0) strcpy(config->deepcw_model_path, value);
         else if (strcmp(key, "spectrum_span_hz") == 0) config->spectrum_span_hz = atoi(value);
         else if (strcmp(key, "tci_stream_mode") == 0) {
             strncpy(config->tci_stream_mode, value, sizeof(config->tci_stream_mode) - 1);
@@ -206,7 +97,6 @@ int config_load(const char *path, config_t *config) {
     
     fclose(f);
     LOG_INFO("Configuration loaded from %s", path);
-    config_resolve_deepcw_model(config, path);
     return 0;
 }
 
@@ -247,6 +137,5 @@ int config_load_auto(const char *explicit_path, config_t *config) {
     }
 
     LOG_WARN("Config file not found, using defaults");
-    config_resolve_deepcw_model(config, NULL);
     return -1;
 }

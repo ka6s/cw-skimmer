@@ -1332,7 +1332,7 @@ cwskimmer_detector_t *cwskimmer_detector_create(const char *config_file) {
     
     logger_init(detector->config.log_level, detector->config.log_file);
 
-    if (cw_decoder_global_init(detector->config.deepcw_model_path) != 0) {
+    if (cw_decoder_global_init() != 0) {
         LOG_ERROR("Failed to initialize ditdah decoder");
         pthread_mutex_destroy(&detector->lock);
         free(detector);
@@ -2549,7 +2549,7 @@ int cwskimmer_replay_capture_file(const char *path)
         }
     }
 
-    if (cw_decoder_global_init(replay.config.deepcw_model_path) != 0) {
+    if (cw_decoder_global_init() != 0) {
         fprintf(stderr, "Replay setup failed: ditdah decoder init\n");
         cw_capture_free_samples(samples);
         pthread_mutex_destroy(&replay.lock);

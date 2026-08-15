@@ -71,7 +71,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     
-    if (cw_decoder_global_init(config.deepcw_model_path) != 0) {
+    if (cw_decoder_global_init() != 0) {
         LOG_ERROR("Failed to initialize ditdah Morse decoder");
         cw_detector_destroy(detector);
         tci_client_destroy(radio);

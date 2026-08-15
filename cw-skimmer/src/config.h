@@ -20,7 +20,6 @@ typedef struct {
     int spot_enabled;         // 0=disabled, 1=enable spot network reporting
     int log_level;            // 0=debug, 1=info, 2=warn, 3=error
     char log_file[256];
-    char deepcw_model_path[512];
     /* Spectrum span in Hz: 0 or sample_rate = full 48 kHz (default/working).
      * 3000 = experimental ±1.5 kHz around VFO, finer bins / faster hop. */
     int spectrum_span_hz;
