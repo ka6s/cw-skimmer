@@ -1,0 +1,30 @@
+[Unit]
+Description=CW Skimmer - Real-time CW Signal Detector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cw-skimmer
+WorkingDirectory=/opt/cw-skimmer
+ExecStart=/opt/cw-skimmer/bin/cw-skimmer /etc/cw-skimmer/cw-skimmer.conf
+Restart=always
+RestartSec=10
+
+# Resource limits
+MemoryLimit=256M
+CPUQuota=20%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cwskimmer
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target
