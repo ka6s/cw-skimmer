@@ -82,7 +82,7 @@ void test_cw_decoder(void) {
     int i;
     printf("\n=== Testing ditdah Decoder ===\n");
 
-    if (cw_decoder_global_init(NULL) != 0) {
+    if (cw_decoder_global_init() != 0) {
         printf("FAILED: ditdah decoder init failed\n");
         return;
     }

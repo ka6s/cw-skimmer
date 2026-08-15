@@ -19,7 +19,7 @@ typedef struct {
 
 typedef struct cw_decoder cw_decoder_t;
 
-int cw_decoder_global_init(const char *model_path);
+int cw_decoder_global_init(void);
 void cw_decoder_global_shutdown(void);
 
 cw_decoder_t *cw_decoder_create(int sample_rate, int wpm);
