@@ -2350,8 +2350,8 @@ int cwskimmer_config_set(cwskimmer_detector_t *detector,
         if (n < 1) {
             n = 1;
         }
-        if (n > 16) {
-            n = 16;
+        if (n > 24) {
+            n = 24;
         }
         detector->config.multi_decode_channels = n;
         LOG_INFO("multi_decode_channels → %d", n);

@@ -32,7 +32,7 @@ void config_defaults(config_t *config) {
     strcpy(config->deepcw_model_path, "models/model.onnx");
     config->spectrum_span_hz = 0;  /* 0 = full-band wide (production default) */
     strcpy(config->tci_stream_mode, "iq");  /* iq | audio */
-    config->multi_decode_channels = 10;
+    config->multi_decode_channels = 24;
     config->training_file[0] = '\0';
 }
 
@@ -200,7 +200,7 @@ int config_load(const char *path, config_t *config) {
         else if (strcmp(key, "multi_decode_channels") == 0) {
             int n = atoi(value);
             if (n < 1) n = 1;
-            if (n > 16) n = 16;
+            if (n > 24) n = 24;
             config->multi_decode_channels = n;
         }
         else if (strcmp(key, "training_file") == 0) {

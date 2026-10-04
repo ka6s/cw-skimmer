@@ -1548,6 +1548,13 @@ void ThresholdMorseWindow::clearDecode()
     updateUi();
 }
 
+void ThresholdMorseWindow::adoptText(const QString &text)
+{
+    resetTiming();
+    m_scrollText = text;
+    updateUi();
+}
+
 void ThresholdMorseWindow::resetTiming()
 {
     applyWpmFromSlider();

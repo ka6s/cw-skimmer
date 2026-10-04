@@ -39,6 +39,8 @@ public:
 
     void clearDecode();
     void resetTiming();
+    /** Keep this copy, then append characters decoded after this call. */
+    void adoptText(const QString &text);
     void prepareForPlayback();
     void setPlaybackMode(bool on);
 

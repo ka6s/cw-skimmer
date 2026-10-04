@@ -92,13 +92,14 @@ void SettingsDialog::createUI()
     auto *decodeChLayout = new QHBoxLayout();
     decodeChLayout->addWidget(new QLabel(QStringLiteral("CW Decode channels:"), detectionGroup));
     m_decodeChannelsSpinBox = new QSpinBox(detectionGroup);
-    m_decodeChannelsSpinBox->setRange(1, 16);
-    m_decodeChannelsSpinBox->setValue(10);
+    m_decodeChannelsSpinBox->setRange(1, 24);
+    m_decodeChannelsSpinBox->setValue(24);
     m_decodeChannelsSpinBox->setToolTip(
         QStringLiteral(
-            "How many of the strongest signals the selected decoder watches.\n"
-            "The waterfall selection is copied in the Morse Decoder window.\n"
-            "The others are listed beside the spectrum."));
+            "How many 2 kHz slices are decoded across the spectrum.\n"
+            "24 covers the full 48 kHz band. Each slice follows the strongest\n"
+            "signal inside it and keeps its copy after the signal stops.\n"
+            "A waterfall click copies that text into the Morse Decoder too."));
     decodeChLayout->addWidget(m_decodeChannelsSpinBox);
     decodeChLayout->addStretch();
     detectionLayout->addLayout(decodeChLayout);
@@ -174,7 +175,7 @@ QString SettingsDialog::getCallsign() const
 
 int SettingsDialog::getDecodeChannels() const
 {
-    return m_decodeChannelsSpinBox ? m_decodeChannelsSpinBox->value() : 10;
+    return m_decodeChannelsSpinBox ? m_decodeChannelsSpinBox->value() : 24;
 }
 
 void SettingsDialog::setDecodeChannels(int n)
@@ -185,8 +186,8 @@ void SettingsDialog::setDecodeChannels(int n)
     if (n < 1) {
         n = 1;
     }
-    if (n > 16) {
-        n = 16;
+    if (n > 24) {
+        n = 24;
     }
     m_decodeChannelsSpinBox->setValue(n);
 }

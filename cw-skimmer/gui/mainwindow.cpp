@@ -129,17 +129,13 @@ void MainWindow::createUI()
     m_spectrumWidget = new SpectrumWidget();
     m_decodeWidget = new DecodeWidget();
     m_multiDecoder = new MultiChannelDecoder(this);
-    m_multiDecoder->setMaxActiveChannels(10);
+    m_multiDecoder->setMaxActiveChannels(MultiChannelDecoder::kMaxChannels);
     m_multiDecoder->setBackend(MultiChannelDecoder::Backend::Spectrum);
     connect(m_multiDecoder, &MultiChannelDecoder::channelsUpdated, this,
             [this](const QVector<MultiChannelDecoder::ChannelView> &channels) {
                 if (!m_decodeWidget) {
                     return;
                 }
-                const bool selected = m_traceWindow && m_traceWindow->isVisible()
-                                      && m_traceWindow->hasTarget();
-                m_decodeWidget->setSelectedSignal(
-                    selected, selected ? m_traceWindow->targetOffsetHz() : 0.0f);
                 m_decodeWidget->setChannels(channels);
             });
 
@@ -371,9 +367,10 @@ void MainWindow::createToolBar()
         "  Threshold — mark/space on the signal trace\n"
         "  Mask — dit/dah boxes on the signal trace\n"
         "  Spectrum — white/black runs on the waterfall, copied 6 dahs behind\n"
-        "The selected decoder watches the 10 strongest signals.\n"
-        "Click one on the waterfall to copy it in the Morse Decoder window.\n"
-        "The others stay listed beside the spectrum.");
+        "Beside the waterfall, each 2 kHz slice has its own Spectrum decoder\n"
+        "and follows the strongest signal in that slice.\n"
+        "Click one on the waterfall to copy its text into the Morse Decoder\n"
+        "and keep decoding it there and beside the spectrum.");
     connect(m_morseBackendButton, &QPushButton::clicked, this, &MainWindow::onToggleMorseBackend);
     toolBar->addWidget(m_morseBackendButton);
 
@@ -876,7 +873,7 @@ void MainWindow::onSpectrumColumnsReady(QVector<QVector<float>> columns, float c
         m_spectrumWidget->appendSpectrumColumns(columns, centerFreq, binWidth);
     }
     /*
-     * The ten side rows each keep their own Spectrum decoder.
+     * Each 2 kHz slice keeps its own Spectrum decoder.
      * The Decoder button only changes the bottom Morse pane.
      * Listen bandwidth matches CW Signal Trace "Listen bins ±" when open.
      */
@@ -1027,27 +1024,23 @@ void MainWindow::onSignalTraceRequested(float freqOffsetHz, float absFreqHz)
     m_traceWindow->raise();
     m_traceWindow->activateWindow();
 
+    const QString sideCopy = m_multiDecoder ? m_multiDecoder->textForOffset(freqOffsetHz)
+                                            : QString();
     if (m_morseWindow) {
-        m_morseWindow->clearDecode();
-        m_morseWindow->resetTiming();
+        m_morseWindow->adoptText(sideCopy);
         m_morseWindow->setThresholdDb(m_traceWindow->thresholdDb());
         m_morseWindow->setTargetLabel(
             QString("IF %1 Hz").arg(m_traceWindow->targetOffsetHz(), 0, 'f', 0));
     }
     if (m_maskWindow) {
-        m_maskWindow->clearDecode();
-        m_maskWindow->resetTiming();
+        m_maskWindow->adoptText(sideCopy);
         m_maskWindow->setTargetLabel(
             QString("IF %1 Hz").arg(m_traceWindow->targetOffsetHz(), 0, 'f', 0));
     }
     if (m_scopeWindow) {
-        m_scopeWindow->clearDecode();
-        m_scopeWindow->resetTiming();
+        m_scopeWindow->adoptText(sideCopy);
         m_scopeWindow->setTargetLabel(
             QString("IF %1 Hz").arg(m_traceWindow->targetOffsetHz(), 0, 'f', 0));
-    }
-    if (m_decodeWidget) {
-        m_decodeWidget->setSelectedSignal(true, m_traceWindow->targetOffsetHz());
     }
 
     onLogMessage(QString("Signal trace: offset %1 Hz (RF %2 Hz)")
@@ -1061,9 +1054,6 @@ void MainWindow::onTraceWindowClosed()
 {
     if (m_spectrumWidget) {
         m_spectrumWidget->clearTraceSelection();
-    }
-    if (m_decodeWidget) {
-        m_decodeWidget->setSelectedSignal(false, 0.0f);
     }
     updateMonitorChannel();
 }
@@ -1088,9 +1078,6 @@ void MainWindow::onTraceTuningChanged()
     if (m_spectrumWidget && m_traceWindow && m_traceWindow->hasTarget()) {
         /* Keep waterfall green marker aligned with fine-tuned offset */
         m_spectrumWidget->setTraceOffsetHz(m_traceWindow->targetOffsetHz());
-    }
-    if (m_decodeWidget && m_traceWindow && m_traceWindow->isVisible() && m_traceWindow->hasTarget()) {
-        m_decodeWidget->setSelectedSignal(true, m_traceWindow->targetOffsetHz());
     }
     updateMonitorChannel();
 }

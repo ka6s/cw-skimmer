@@ -44,6 +44,8 @@ public:
 
     void clearDecode();
     void resetTiming();
+    /** Keep this copy, then append characters decoded after this call. */
+    void adoptText(const QString &text);
 
     /**
      * Call when starting .cwtrace/.wav playback: reset decode state and open

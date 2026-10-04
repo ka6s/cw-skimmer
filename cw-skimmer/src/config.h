@@ -26,7 +26,7 @@ typedef struct {
     int spectrum_span_hz;
     /* TCI binary stream: "iq" (complex baseband) or "audio" (demod L/R). */
     char tci_stream_mode[16];
-    /* Parallel CW Decode channels (GUI multi-channel Morse). */
+    /* Spectrum slices decoded beside the waterfall (one per 2 kHz, up to 24). */
     int multi_decode_channels;
     /* Offline TCI training stream. Empty string uses the live radio. */
     char training_file[512];

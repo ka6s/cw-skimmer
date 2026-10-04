@@ -1723,6 +1723,15 @@ void MaskMorseWindow::clearDecode()
     updateUi();
 }
 
+void MaskMorseWindow::adoptText(const QString &text)
+{
+    resetTiming();
+    m_scrollText = text;
+    refreshTextView();
+    emit textChanged(m_scrollText);
+    updateUi();
+}
+
 void MaskMorseWindow::resetTiming()
 {
     applyWpmFromSlider();

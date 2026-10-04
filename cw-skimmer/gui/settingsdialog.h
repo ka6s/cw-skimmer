@@ -24,7 +24,7 @@ public:
     int getDetectionThreshold() const;
     double getMinSnrDb() const;
     QString getCallsign() const;
-    /** Parallel CW Decode channels (1…16). */
+    /** One decoder per 2 kHz slice (1…24; 24 covers 48 kHz). */
     int getDecodeChannels() const;
     void setDecodeChannels(int n);
 

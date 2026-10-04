@@ -1,13 +1,12 @@
 /**
  * @file decodewidget.h
- * @brief Independent CW copy for each strong signal, beside the waterfall
+ * @brief CW copy for each 2 kHz spectrum slice, beside the waterfall
  *
- * Each live signal gets one line, placed on its waterfall trace and left
- * there after the CW stops. The line is erased only when that signal leaves
- * the top set because a new signal took the slot. The line is a window into
- * that signal's decoder buffer: newest characters sit on the right, and the
- * bar under the copy scrolls back through text already colored. No frequency
- * label.
+ * Each slice that has copied text gets one line, painted on the signal that
+ * slice is following. The line stays after the CW stops, including when that
+ * signal is also copied in the main Morse window. The line is a window into
+ * the decoder buffer: newest characters sit on the right, and the bar under
+ * the copy scrolls back through text already colored. No frequency label.
  */
 
 #ifndef DECODEWIDGET_H
@@ -51,8 +50,8 @@ public slots:
     void setChannels(const QVector<MultiChannelDecoder::ChannelView> &channels);
 
     /**
-     * The waterfall-selected signal is copied in the bottom decoder window,
-     * so it is left off this side list.
+     * Remembered for callers. The side line stays when that signal is also
+     * copied in the main Morse window.
      */
     void setSelectedSignal(bool selected, float offsetHz);
 
@@ -68,9 +67,10 @@ protected:
 
 private:
     struct DecodeLine {
+        int slot;           /* 2 kHz slice, or -1 for the legacy single stream */
         float frequencyHz;
         float freqOffsetHz;
-        QString text;       /* private decoder tail; paint keeps what fits the row */
+        QString text;       /* private decoder buffer; paint keeps what fits the row */
         float confidence;
         qint64 lastUpdateMs;
         bool fromMulti;
@@ -101,7 +101,7 @@ private:
     static const int kPlotTop = 20;
     static const int kPlotBottomMargin = 40;
     static const int kHeaderHeight = 18;
-    static const int kMaxLines = 16;
+    static const int kMaxLines = 24;
     static const int kChannelMatchHz = 2000;
     static const int kDefaultChars = 10;
 };

@@ -23,6 +23,8 @@ public:
     void setTargetLabel(const QString &label);
     void clearDecode();
     void resetTiming();
+    /** Keep this copy, then append whatever the waterfall decodes next. */
+    void adoptText(const QString &text);
 
     /**
      * One waterfall column at the tuned frequency.

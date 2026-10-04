@@ -208,6 +208,7 @@ void DecodeWidget::appendDecode(QString decodedText, float frequencyHz,
             m_lines.removeAt(oldest);
         }
         DecodeLine line;
+        line.slot = -1;
         line.frequencyHz = frequencyHz;
         line.freqOffsetHz = freqOffsetHz;
         line.confidence = confidence;
@@ -253,32 +254,27 @@ void DecodeWidget::rebuildLines()
         if (!ch.active) {
             continue;
         }
-        if (m_hideSelected
-            && std::fabs(ch.freqOffsetHz - m_selectedOffsetHz) < static_cast<float>(kChannelMatchHz)) {
-            continue;
-        }
-
         int idx = -1;
-        float best = static_cast<float>(kChannelMatchHz);
         for (int i = 0; i < m_lines.size(); ++i) {
             if (claimed[i]) {
                 continue;
             }
-            const float dist = std::fabs(m_lines[i].freqOffsetHz - ch.freqOffsetHz);
-            if (dist < best) {
-                best = dist;
+            if (m_lines[i].slot == ch.slot) {
                 idx = i;
+                break;
             }
         }
 
         if (idx >= 0) {
             DecodeLine &line = m_lines[idx];
-            /* Keep the vertical slot chosen when this trace first appeared.
-             * The decoder string is the buffer; the paint shows a window into it. */
-            if (!ch.text.isEmpty()) {
+            /* A quiet republish must not wipe copy already on the line.
+             * A longer string is the decoder adding characters. */
+            if (ch.text.size() >= line.text.size()) {
                 line.text = ch.text;
             }
+            line.slot = ch.slot;
             line.frequencyHz = ch.frequencyHz;
+            line.freqOffsetHz = ch.freqOffsetHz;
             line.confidence = std::min(1.0f, std::max(0.0f, (ch.snrDb - 3.0f) / 20.0f));
             line.lastUpdateMs = now;
             line.fromMulti = true;
@@ -290,6 +286,7 @@ void DecodeWidget::rebuildLines()
             continue;
         }
         DecodeLine line;
+        line.slot = ch.slot;
         line.frequencyHz = ch.frequencyHz;
         line.freqOffsetHz = ch.freqOffsetHz;
         line.confidence = std::min(1.0f, std::max(0.0f, (ch.snrDb - 3.0f) / 20.0f));
@@ -300,9 +297,8 @@ void DecodeWidget::rebuildLines()
         claimed.append(true);
     }
 
-    /* A quiet signal stays claimed, so its copy stays on the trace. An
-     * unclaimed line is one whose signal was dropped for a stronger newcomer,
-     * or the trace the bottom decoder has taken. */
+    /* A quiet slice stays claimed, so its copy stays on the trace. An
+     * unclaimed line is a slice that is no longer being decoded. */
     for (int i = m_lines.size() - 1; i >= 0; --i) {
         if (!claimed[i]) {
             m_lines.removeAt(i);

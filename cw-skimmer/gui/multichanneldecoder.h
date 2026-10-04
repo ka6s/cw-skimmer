@@ -1,12 +1,12 @@
 /**
  * @file multichanneldecoder.h
- * @brief Parallel CW decode on up to 16 strongest spectrum peaks
+ * @brief One Spectrum decoder for each 2 kHz slice of the waterfall
  *
- * Each active channel owns one Spectrum decoder locked to the bin where
- * that signal was acquired. The copy stays after the CW stops. A channel
- * is cleared only when a new signal takes its place: an empty slot is used
- * first, then a signal that never stayed on, then the weakest held signal
- * when the newcomer is stronger.
+ * A 48 kHz spectrum is 24 slices. Each slice follows the strongest signal
+ * inside it. A small drift stays on the same decoder. A louder signal
+ * elsewhere in the slice takes over after it has been the strongest for
+ * two columns, and the copy already decoded stays with it. That copy
+ * also stays after the CW stops.
  *
  * Backends (setBackend):
  *  - Threshold: headless ThresholdMorseWindow per channel
@@ -30,10 +30,16 @@ class MultiChannelDecoder : public QObject {
     Q_OBJECT
 
 public:
-    static const int kMaxChannels = 16;
-    /* Tail kept per channel. The side list shows only what fits, and drops
-     * the leftmost character when the next one is copied. */
+    /* 48 kHz / 2 kHz. A wider span still gets one slice per 2 kHz, up to this. */
+    static const int kMaxChannels = 24;
+    static constexpr int kSlotHz = 2000;
+    /* Tail kept per channel. The side list shows a window into that buffer. */
     static const int kDisplayChars = 256;
+
+    /** How many 2 kHz slices cover this spectrum span. */
+    static int slotCountForSpan(float spanHz);
+    /** Slice index that contains offsetHz. */
+    static int slotForOffset(float offsetHz, float spanHz);
 
     enum class Backend {
         Threshold = 0,
@@ -60,6 +66,7 @@ public:
                                float centerHz, float noiseFloorDb);
 
     struct ChannelView {
+        int slot;
         float freqOffsetHz;
         float frequencyHz;
         float snrDb;
@@ -68,6 +75,9 @@ public:
     };
 
     QVector<ChannelView> channels() const;
+
+    /** Copy already decoded in the 2 kHz slice that contains offsetHz. */
+    QString textForOffset(float offsetHz) const;
 
 signals:
     void channelsUpdated(const QVector<MultiChannelDecoder::ChannelView> &channels);
@@ -99,22 +109,21 @@ private:
         MaskMorseWindow *maskDecoder;
         SpectrumMorseWindow *scopeDecoder;
         bool active;
-        bool sustained;  /* seen on a later column, so a one-bin spike cannot hold the slot */
+        bool sustained;  /* seen on a later column near the followed frequency */
         int bornSerial;
+        float switchHz;
+        int switchHits;
     };
 
-    struct PendingPeak {
-        float offsetHz;
-        float snrDb;
-        int hits;
-        int lastSerial;
-    };
-
-    QVector<PeakCand> findTopPeaks(const QVector<float> &spectrum, float binWidth,
-                                   float noiseFloorDb, int maxPeaks) const;
-    int matchChannel(float offsetHz) const;
-    int allocateChannel(float offsetHz, float snrDb, bool replaceSustained);
-    void rememberPending(const PeakCand &pk);
+    bool slotEnabled(int slot) const;
+    bool findStrongestPeak(const QVector<float> &spectrum, float binWidth,
+                           float noiseFloorDb, float lowHz, float highHz,
+                           PeakCand &out) const;
+    void trackSlot(Channel &ch, const QVector<float> &spectrum, float binWidth,
+                   float noiseFloorDb, float slotLow, float slotHigh,
+                   qint64 nowMs);
+    void armSlot(Channel &ch, const PeakCand &pk, qint64 nowMs);
+    void retargetSlot(Channel &ch, const PeakCand &pk, qint64 nowMs);
     void updateChannelThreshold(Channel &ch, float powerDb, float noiseFloorDb);
     void emitSnapshot();
     void resetChannelState(Channel &ch);
@@ -131,12 +140,15 @@ private:
     qint64 m_columnClockMs; /* one FFT hop per column, not one stamp per GUI batch */
     qint64 m_lastEmitMs;
     int m_columnSerial;
-    QVector<PendingPeak> m_pending;
+    int m_naturalSlots;
+    float m_spanHz;
 
-    /* One decoder per 2 kHz window. A peak inside that window stays on the
-     * same decoder; the next signal has to sit a full 2 kHz away. */
-    static const int kMatchHz = 2000;
-    static const int kMinPeakSeparationHz = 2000;
+    /* Same-signal follow distance. A louder peak farther than this, held for
+     * two columns, moves the slice. The copy already decoded is kept. With
+     * nothing else in the slice, a quiet signal is left where it is. */
+    static constexpr float kFollowHz = 150.f;
+    static constexpr float kSwitchMarginDb = 1.5f;
+    static constexpr int kSwitchColumns = 2;
     static const int kThreshHistMax = 160;
     /* Same rise as the spectrum decoder's white trace. A quieter bin is not
      * a signal that decoder can copy. */

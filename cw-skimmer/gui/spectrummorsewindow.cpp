@@ -229,6 +229,17 @@ void SpectrumMorseWindow::clearDecode()
     refreshStatus();
 }
 
+void SpectrumMorseWindow::adoptText(const QString &text)
+{
+    resetTiming();
+    m_sealed = text;
+    m_text = text;
+    if (m_textView) {
+        m_textView->setPlainText(m_text);
+        applyCwCopyColors(m_textView);
+    }
+}
+
 void SpectrumMorseWindow::resetTiming()
 {
     m_hist.clear();
