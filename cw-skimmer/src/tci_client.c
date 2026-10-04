@@ -3,6 +3,7 @@
 #endif
 
 #include "tci_client.h"
+#include "tci_stream.h"
 #include "logger.h"
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +23,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <poll.h>
+#include <time.h>
 
 /* usleep declaration for strict C99 (-std=c99) builds where unistd may hide it without _BSD_SOURCE */
 #if !defined(_BSD_SOURCE) && !defined(_DEFAULT_SOURCE) && !defined(_XOPEN_SOURCE)
@@ -31,14 +33,14 @@ int usleep(unsigned int __useconds);
 #define IQ_BUFFER_SIZE 480000
 #define TCI_TCP_CONNECT_TIMEOUT_MS 5000
 #define TCI_RX_BUFFER_SIZE 65536
-#define TCI_STREAM_HEADER_SIZE 64
-#define TCI_STREAM_IQ 0
-#define TCI_STREAM_RX_AUDIO 1
-#define TCI_AUDIO_FORMAT_FLOAT32 3
 #define TCI_RX_AUDIO_FRAME_FRAMES 512
-#define TCI_AUDIO_CHANNELS 2
 #define TCI_AUDIO_RX_FRAME_MAX_BYTES \
     (TCI_STREAM_HEADER_SIZE + (TCI_RX_AUDIO_FRAME_FRAMES * TCI_AUDIO_CHANNELS * sizeof(float)))
+#define TCI_TRAIN_MAX_SIGNALS 16
+#define TCI_TRAIN_RATE 48000
+
+typedef char tci_stream_header_size_ok[
+    (sizeof(tci_stream_header_t) == TCI_STREAM_HEADER_SIZE) ? 1 : -1];
 
 /* Verbose TCI connection spam — enable with -DCONN_DEBUG when debugging connect */
 #ifdef CONN_DEBUG
@@ -49,18 +51,6 @@ int usleep(unsigned int __useconds);
 #else
 #define CONN_DBG(fmt, ...) ((void)0)
 #endif
-
-typedef struct {
-    uint32_t receiver;
-    uint32_t sample_rate;
-    uint32_t format;
-    uint32_t codec;
-    uint32_t crc;
-    uint32_t length;
-    uint32_t type;
-    uint32_t channels;
-    uint32_t reserv[8];
-} tci_stream_header_t;
 
 typedef struct {
     tci_client_t *client;
@@ -84,8 +74,25 @@ typedef struct {
     pthread_mutex_t lock;
 } tci_tcp_context_t;
 
+typedef struct {
+    int index;
+    float offset_hz;
+    float atten_db;
+    float fade_db;
+    int wpm;
+    float start_s;
+    char text[128];
+} tci_train_signal_t;
+
 static tci_ws_context_t *g_ws_context = NULL;
 static tci_tcp_context_t *g_tcp_context = NULL;
+static FILE *g_training_fp = NULL;
+static int g_training_mode = 0;
+static int g_training_eof = 0;
+static uint64_t g_training_samples_fed = 0;
+static struct timespec g_training_t0;
+static tci_train_signal_t g_train_signals[TCI_TRAIN_MAX_SIGNALS];
+static int g_train_count = 0;
 
 static int tci_tcp_connect_socket(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 
@@ -197,6 +204,33 @@ static void tci_parse_text_response(tci_client_t *client, const char *text) {
                          dds_idx, freq, client->iq_vfo);
             }
         }
+    } else if (strstr(text, "cw_train:") == text) {
+        int index = 0;
+        int wpm = 0;
+        float offset = 0.0f;
+        float atten = 0.0f;
+        float fade = 0.0f;
+        float start_s = 0.0f;
+        char body[128];
+
+        body[0] = '\0';
+        if (sscanf(text, "cw_train:%d,%f,%f,%f,%d,%f,%127[^;]",
+                   &index, &offset, &atten, &fade, &wpm, &start_s, body) == 7) {
+            if (g_train_count < TCI_TRAIN_MAX_SIGNALS) {
+                tci_train_signal_t *sig = &g_train_signals[g_train_count++];
+                sig->index = index;
+                sig->offset_hz = offset;
+                sig->atten_db = atten;
+                sig->fade_db = fade;
+                sig->wpm = wpm;
+                sig->start_s = start_s;
+                memcpy(sig->text, body, strlen(body) + 1);
+            }
+            LOG_INFO("Training transcript %d: %+.1f Hz  atten %.1f dB  fade %.1f dB  %d WPM  t=%.3fs  \"%s\"",
+                     index, offset, atten, fade, wpm, start_s, body);
+        } else {
+            LOG_WARN("Ignoring malformed cw_train record: %s", text);
+        }
     } else if (strstr(text, "tx_frequency:") == text) {
         double freq_d = 0.0;
         if (sscanf(text, "tx_frequency:%lf", &freq_d) == 1 && freq_d > 1.0e5) {
@@ -301,6 +335,9 @@ static int tci_process_audio_payload(tci_client_t *client, const unsigned char *
         audio_data = (const float *)(buffer + offset + TCI_STREAM_HEADER_SIZE);
         num_floats = (int)(payload_bytes / sizeof(float));
         num_iq_pairs = num_floats / TCI_AUDIO_CHANNELS;
+        if (g_training_mode && num_iq_pairs > 0) {
+            g_training_samples_fed += (uint64_t)num_iq_pairs;
+        }
 
         /*
          * type 0 = true complex IQ (Thetis / ExpertSDR iq_start)
@@ -685,17 +722,7 @@ static void tci_tcp_context_free(void) {
     g_tcp_context = NULL;
 }
 
-static int tci_tcp_connect(tci_client_t *client) {
-    struct addrinfo hints;
-    struct addrinfo *res = NULL;
-    struct addrinfo *rp = NULL;
-    char portstr[16];
-    int sockfd = -1;
-
-    if (!client) {
-        return -1;
-    }
-
+static int tci_tcp_context_init(tci_client_t *client) {
     if (g_tcp_context) {
         tci_tcp_context_free();
     }
@@ -713,6 +740,23 @@ static int tci_tcp_connect(tci_client_t *client) {
     g_tcp_context->audio_buffer = malloc(g_tcp_context->audio_size);
     if (!g_tcp_context->stream_buffer || !g_tcp_context->audio_buffer) {
         tci_tcp_context_free();
+        return -1;
+    }
+    return 0;
+}
+
+static int tci_tcp_connect(tci_client_t *client) {
+    struct addrinfo hints;
+    struct addrinfo *res = NULL;
+    struct addrinfo *rp = NULL;
+    char portstr[16];
+    int sockfd = -1;
+
+    if (!client) {
+        return -1;
+    }
+
+    if (tci_tcp_context_init(client) != 0) {
         return -1;
     }
 
@@ -956,12 +1000,118 @@ static int tci_ws_send_command(tci_client_t *client, const char *command) {
     return 0;
 }
 
+static void tci_training_close(void) {
+    if (g_training_fp) {
+        fclose(g_training_fp);
+        g_training_fp = NULL;
+    }
+    g_training_mode = 0;
+    g_training_eof = 0;
+    g_training_samples_fed = 0;
+}
+
+static int tci_training_consume_preamble(tci_client_t *client) {
+    unsigned char buf[256];
+    size_t n = 0;
+    int c;
+
+    while ((c = fgetc(g_training_fp)) != EOF) {
+        unsigned char byte = (unsigned char)c;
+
+        if (n == 0 && !tci_is_text_start(byte)) {
+            ungetc(c, g_training_fp);
+            return 0;
+        }
+
+        buf[n++] = byte;
+        if (byte == ';' || n == sizeof(buf)) {
+            int append_rc;
+
+            pthread_mutex_lock(&g_tcp_context->lock);
+            append_rc = tci_tcp_append_stream(buf, n);
+            pthread_mutex_unlock(&g_tcp_context->lock);
+            if (append_rc != 0) {
+                return -1;
+            }
+            tci_tcp_parse_stream_buffer(client);
+            if (byte != ';') {
+                LOG_WARN("Training preamble token exceeded %zu bytes", sizeof(buf));
+                return -1;
+            }
+            n = 0;
+        }
+    }
+    return 0;
+}
+
+static void tci_training_service(tci_client_t *client) {
+    unsigned char chunk[8192];
+    size_t n;
+    struct timespec now;
+    double elapsed;
+    double allowed;
+
+    if (!client || !g_training_fp || g_training_eof || !g_tcp_context) {
+        return;
+    }
+
+    /* Leave room in the IQ ring so a slow consumer is not overrun. */
+    if (client->buffer_count > client->buffer_size - 32768) {
+        return;
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    elapsed = (double)(now.tv_sec - g_training_t0.tv_sec) +
+              (double)(now.tv_nsec - g_training_t0.tv_nsec) / 1e9;
+    if (elapsed < 0.0) {
+        elapsed = 0.0;
+    }
+    /* Stay about a quarter second ahead of wall clock, like a live radio. */
+    allowed = elapsed * (double)TCI_TRAIN_RATE + (double)TCI_TRAIN_RATE * 0.25;
+    if ((double)g_training_samples_fed >= allowed) {
+        return;
+    }
+
+    n = fread(chunk, 1, sizeof(chunk), g_training_fp);
+    if (n == 0) {
+        g_training_eof = 1;
+        pthread_mutex_lock(&g_tcp_context->lock);
+        if (g_tcp_context->stream_len > 0) {
+            LOG_WARN("Training stream ended with %zu unparsed bytes",
+                     g_tcp_context->stream_len);
+            g_tcp_context->stream_len = 0;
+        }
+        pthread_mutex_unlock(&g_tcp_context->lock);
+        LOG_INFO("Training file reached end of stream");
+        return;
+    }
+
+    pthread_mutex_lock(&g_tcp_context->lock);
+    if (tci_tcp_append_stream(chunk, n) == 0) {
+        pthread_mutex_unlock(&g_tcp_context->lock);
+        tci_tcp_parse_stream_buffer(client);
+    } else {
+        pthread_mutex_unlock(&g_tcp_context->lock);
+        LOG_ERROR("Training stream buffer overflow");
+        g_training_eof = 1;
+    }
+}
+
 static void tci_tcp_service(tci_client_t *client) {
     unsigned char chunk[8192];
     ssize_t n;
     struct pollfd pfd;
 
-    if (!client || !g_tcp_context || client->socket_fd < 0 || !client->connected) {
+    if (!client || !g_tcp_context || !client->connected) {
+        return;
+    }
+
+    if (g_training_mode) {
+        tci_training_service(client);
+        return;
+    }
+
+    if (client->socket_fd < 0) {
         return;
     }
 
@@ -1055,6 +1205,12 @@ int tci_client_connect(tci_client_t *client) {
 int tci_send_command(tci_client_t *client, const char *command) {
     if (!client || !client->connected) {
         return -1;
+    }
+
+    /* Training files already contain the radio's text replies. */
+    if (g_training_mode) {
+        (void)command;
+        return 0;
     }
 
     if (client->transport == TCI_TRANSPORT_WEBSOCKET) {
@@ -1322,6 +1478,8 @@ void tci_client_disconnect(tci_client_t *client) {
         g_ws_context = NULL;
     }
 
+    tci_training_close();
+
     if (g_tcp_context) {
         tci_tcp_context_free();
     }
@@ -1416,6 +1574,107 @@ int tci_request_vfo_frequency(tci_client_t *client, int vfo, int channel) {
 
     snprintf(cmd, sizeof(cmd), "vfo:%d,%d", vfo, channel);
     return tci_send_command(client, cmd);
+}
+
+int tci_client_open_training(tci_client_t *client, const char *path) {
+    if (!client || !path || !path[0]) {
+        return -1;
+    }
+
+    tci_training_close();
+    g_train_count = 0;
+
+    if (tci_tcp_context_init(client) != 0) {
+        return -1;
+    }
+
+    g_training_fp = fopen(path, "rb");
+    if (!g_training_fp) {
+        LOG_ERROR("Failed to open training file %s", path);
+        tci_tcp_context_free();
+        return -1;
+    }
+
+    client->transport = TCI_TRANSPORT_TCP;
+    client->socket_fd = -1;
+    client->connected = 1;
+    client->iq_vfo = 0;
+    g_training_mode = 1;
+    g_training_eof = 0;
+    g_training_samples_fed = 0;
+    g_stream_audio_only = 0;
+
+    if (tci_training_consume_preamble(client) != 0) {
+        LOG_ERROR("Failed to read training preamble from %s", path);
+        tci_client_disconnect(client);
+        return -1;
+    }
+
+    if (g_train_count == 0) {
+        LOG_WARN("Training file %s has no cw_train transcript lines", path);
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &g_training_t0);
+    LOG_INFO("Training file %s open (%d transcript lines, center %lld Hz)",
+             path, g_train_count, client->center_frequency);
+    return 0;
+}
+
+int tci_training_active(void) {
+    return g_training_mode;
+}
+
+int tci_training_at_eof(void) {
+    return g_training_mode && g_training_eof;
+}
+
+int tci_training_finished(const tci_client_t *client) {
+    if (!g_training_mode || !g_training_eof || !client) {
+        return 0;
+    }
+    if (client->buffer_count > 0) {
+        return 0;
+    }
+    if (g_tcp_context &&
+        (g_tcp_context->audio_len > 0 || g_tcp_context->stream_len > 0)) {
+        return 0;
+    }
+    return 1;
+}
+
+int tci_training_transcript_count(void) {
+    return g_train_count;
+}
+
+int tci_training_transcript(int index, float *offset_hz, float *atten_db,
+                            float *fade_db, int *wpm, float *start_s,
+                            char *text, int text_max) {
+    const tci_train_signal_t *sig;
+
+    if (index < 0 || index >= g_train_count) {
+        return -1;
+    }
+    sig = &g_train_signals[index];
+    if (offset_hz) {
+        *offset_hz = sig->offset_hz;
+    }
+    if (atten_db) {
+        *atten_db = sig->atten_db;
+    }
+    if (fade_db) {
+        *fade_db = sig->fade_db;
+    }
+    if (wpm) {
+        *wpm = sig->wpm;
+    }
+    if (start_s) {
+        *start_s = sig->start_s;
+    }
+    if (text && text_max > 0) {
+        strncpy(text, sig->text, (size_t)text_max - 1);
+        text[text_max - 1] = '\0';
+    }
+    return 0;
 }
 
 void tci_service_websocket(void) {

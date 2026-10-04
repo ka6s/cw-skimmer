@@ -130,6 +130,8 @@ signals:
      * @param sampleTimeMs  monotonic ms from window open
      */
     void sampleReady(float powerDb, bool aboveThreshold, qint64 sampleTimeMs);
+    /** Newest point just drawn on the trace, and the threshold line. */
+    void liveEnvelope(float powerDb, float thresholdDb);
     void thresholdChanged(float thresholdDb);
     void openMorseRequested();
     /** Recording toggled off with samples ready — parent should write files. */
@@ -226,7 +228,8 @@ private:
     float m_noiseAvgDb;      /* average key-up / grass level */
     float m_noisePeakDb;     /* peak of grass (floor guard) */
     float m_markPeakHoldDb;  /* absolute top of bits (drawn PEAK) */
-    float m_markBodyDb;      /* typical mark tops for thr placement */
+    float m_markBodyDb;
+    float m_gapThresholdDb; /* last threshold that sat in a real mark/noise gap */
     bool m_trackInit;
     int m_sampleCount;
     int m_afcHoldCount;     /* samples held during key-up */
@@ -234,7 +237,8 @@ private:
     bool m_keyPendingHigh;
     qint64 m_keyEdgeStartMs;
     qint64 m_lastDetectTimeMs;  /* skip re-keying the same mid-scope sample */
-    int m_refWpm;           /* used only for min-dit noise reject (default 20) */
+    qint64 m_columnClockMs;     /* sample-locked time; batches must not share one stamp */
+    int m_refWpm;           /* min-dit noise reject; 35 WPM so a column can confirm */
     QString m_statusNotice;
     QElapsedTimer m_clock;
 

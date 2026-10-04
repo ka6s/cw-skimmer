@@ -13,6 +13,7 @@
 #include <QImage>
 #include <QMouseEvent>
 #include <QString>
+#include <QWheelEvent>
 
 class SpectrumWidget : public QWidget {
     Q_OBJECT
@@ -58,10 +59,21 @@ public:
     /** Noise-floor estimate of the newest spectrum column. */
     float latestNoiseFloorDb() const;
 
+    /** Same 40th-percentile floor the waterfall uses to paint one column. */
+    float estimateNoiseFloor(const QVector<float> &spectrum) const;
+
+    /**
+     * Show spanHz of the waterfall, with lowHz at the bottom of the plot.
+     * spanHz of 10000 is the on-screen window; the rest is reached by scrolling.
+     */
+    void setFrequencyView(float lowHz, float spanHz);
+
 signals:
     void captureMarkRequested(float freqOffsetHz, float absFreqHz);
     /** Plain click on waterfall: open/retune single-signal oscilloscope. */
     void signalTraceRequested(float freqOffsetHz, float absFreqHz);
+    /** Mouse wheel over the waterfall. Positive deltaY scrolls toward higher frequency. */
+    void verticalScrollRequested(int deltaY);
     /**
      * Emitted when a spectrum column looks "all white" (saturated) — often
      * precedes a UI freeze. Message includes min/max/noise/NaN stats.
@@ -75,6 +87,7 @@ protected:
     void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
+    void wheelEvent(QWheelEvent *event) override;
 
 private:
     QRect plotRect() const;
@@ -105,9 +118,9 @@ private:
 
     int offsetToBinIndex(float freqOffsetHz, int numBins) const;
     int binIndexToY(int binIndex, int numBins, int plotY, int plotHeight) const;
+    void visibleFrequency(int numBins, float &lowHz, float &highHz) const;
 
     QColor powerToColor(float power_db, float noise_floor_db) const;
-    float estimateNoiseFloor(const QVector<float> &spectrum) const;
     SpectrumStats analyzeSpectrum(const QVector<float> &spectrum, float noiseFloorDb) const;
     void ensureWaterfallImage(int plotWidth, int plotHeight);
     void rebuildWaterfallImage();
@@ -145,6 +158,10 @@ private:
     double m_perfPaintTotalMs;
     double m_perfPaintMaxMs;
     int m_perfPaintCount;
+
+    /* Vertical slice of the full band drawn into the plot. 0 span draws it all. */
+    float m_viewLowHz;
+    float m_viewSpanHz;
 };
 
 #endif // SPECTRUMWIDGET_H

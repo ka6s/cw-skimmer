@@ -1,0 +1,17 @@
+# CW skimmer training set 07
+# stream=set_07.tcistream
+# center_hz=14074000 sample_rate=48000 duration_s=40
+# noise_sigma=0.00130  reference_amplitude=0.20 (0 dB, full strength)
+# English dictionary words only. Speed is 5 to 30 WPM.
+# Carriers are at least 2000 Hz apart.
+# Each tone's level moves at random from barely detectable (-54.0 dB) to full strength (0.0 dB).
+# atten_db is the midpoint of that swing; fade_db is half of it.
+# Each tone starts at 0.25s and is keyed until the file is full.
+# end_s is the sample time when the last Morse element ends.
+# text is exactly the characters that were keyed.
+# index offset_hz atten_db fade_db wpm start_s end_s text
+1	-17500.0	-27.0	27.0	5	0.250	36.970	A CAT THE SUN IS WARM
+2	-7500.0	-27.0	27.0	10	0.250	39.250	COPY THIS THE DOG IS BIG THE CAT IS NEAR A
+3	+2500.0	-27.0	27.0	18	0.250	39.383	HEAR THE LOUD BIRD PLEASE SEND A CLEAR COPY A WARM SUN DAY SOFT RAIN THE
+4	+12500.0	-27.0	27.0	25	0.250	39.466	THE LAZY FOX AND THE HEN THE SMALL FISH GOOD DAY TO YOU THE RIVER IS NEAR SOFT RAIN A BIG RED FOX THE
+5	+20000.0	-27.0	27.0	30	0.250	39.330	SEND A CLEAR COPY OF THIS WORD SOFT RAIN THE NIGHT WIND IS COLD A BIG RED FOX HEAR THE LOUD BIRD WATER IS COLD COPY

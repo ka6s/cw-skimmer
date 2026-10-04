@@ -45,6 +45,8 @@ public:
     void clearFrozenCapture();
     bool saveCapture(const QString &path, float markFreqOffsetHz,
                      const QString &expectedText, const QString &notes);
+    /** Spectrum offset to play on the audio monitor. Safe from the GUI thread. */
+    void setMonitorTone(float offsetHz, bool enabled);
 
 public slots:
     /** Must be invoked on the worker thread. */
@@ -52,6 +54,7 @@ public slots:
     /** Must be invoked on the worker thread (joins detection pthread). */
     void stop();
     void setConfig(const QString &key, const QString &value);
+    QString configValue(const QString &key) const;
 
 signals:
     void signalDetected(float frequency, float freqOffsetHz, float snr, float confidence,
@@ -63,6 +66,7 @@ signals:
     void spectrumColumnsReady(QVector<QVector<float>> columns, float centerFreq, float binWidth);
     void decodeUpdated(QString decodedText, float frequencyHz,
                        float freqOffsetHz, float confidence);
+    void monitorPcmReady(QByteArray pcm);
     void logMessage(QString message, int level);
     void errorOccurred(QString error);
     void statusChanged(bool running);
@@ -74,6 +78,7 @@ private:
     static void statsCallbackStatic(const cwskimmer_stats_t *stats, void *userdata);
     static void spectrumCallbackStatic(const cwskimmer_spectrum_t *spectrum, void *userdata);
     static void decodeCallbackStatic(const cwskimmer_decode_t *decode, void *userdata);
+    static void monitorCallbackStatic(const int16_t *pcm, int sample_count, void *userdata);
     static void logCallbackStatic(const char *message, int level, void *userdata);
 
     void runDetectionLoop();

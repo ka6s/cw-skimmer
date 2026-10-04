@@ -1,4 +1,4 @@
-QT       += core gui
+QT       += core gui multimedia
 
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
@@ -17,6 +17,7 @@ SOURCES += \
     mainwindow.cpp \
     spectrumwidget.cpp \
     decodewidget.cpp \
+    cwcopyformat.cpp \
     signalswidget.cpp \
     spotswidget.cpp \
     settingsdialog.cpp \
@@ -25,13 +26,16 @@ SOURCES += \
     signaltracewindow.cpp \
     thresholdmorsewindow.cpp \
     maskmorsewindow.cpp \
+    spectrummorsewindow.cpp \
     deepcwmorsewindow.cpp \
-    multichanneldecoder.cpp
+    multichanneldecoder.cpp \
+    audiomonitor.cpp
 
 HEADERS += \
     mainwindow.h \
     spectrumwidget.h \
     decodewidget.h \
+    cwcopyformat.h \
     signalswidget.h \
     spotswidget.h \
     settingsdialog.h \
@@ -40,8 +44,10 @@ HEADERS += \
     signaltracewindow.h \
     thresholdmorsewindow.h \
     maskmorsewindow.h \
+    spectrummorsewindow.h \
     deepcwmorsewindow.h \
-    multichanneldecoder.h
+    multichanneldecoder.h \
+    audiomonitor.h
 
 # Link against the C detector library and build static library from sources
 SOURCES += \

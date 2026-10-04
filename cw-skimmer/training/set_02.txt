@@ -1,0 +1,17 @@
+# CW skimmer training set 02
+# stream=set_02.tcistream
+# center_hz=14074000 sample_rate=48000 duration_s=40
+# noise_sigma=0.00070  reference_amplitude=0.20 (0 dB, full strength)
+# English dictionary words only. Speed is 5 to 30 WPM.
+# Carriers are at least 2000 Hz apart.
+# Each tone's level moves at random from barely detectable (-59.4 dB) to full strength (0.0 dB).
+# atten_db is the midpoint of that swing; fade_db is half of it.
+# Each tone starts at 0.25s and is keyed until the file is full.
+# end_s is the sample time when the last Morse element ends.
+# text is exactly the characters that were keyed.
+# index offset_hz atten_db fade_db wpm start_s end_s text
+1	-18500.0	-29.7	29.7	6	0.250	39.250	RED HEN WATER IS COLD CAT
+2	-9000.0	-29.7	29.7	10	0.250	38.290	BLUE BIRD THE TRAIN IS NEAR CLOSE THE PATH
+3	+1000.0	-29.7	29.7	16	0.250	39.475	A FAST RED FOX A GREEN FIELD OF SHEEP THE BOAT IS ON THE LAKE CLOSE
+4	+11000.0	-29.7	29.7	22	0.250	39.356	THE SMALL FISH SEND THIS TRUE WORD AGAIN CLOSE THE PATH THE NORTH STAR IS FAR A FAST RED FOX
+5	+21000.0	-29.7	29.7	28	0.250	39.290	PLEASE COPY THIS CLEAR WORD A FAST RED FOX THE HORSE IS HOME RED HEN AND THE DOG BLUE BIRD IN THE TREE A SOFT WIND A

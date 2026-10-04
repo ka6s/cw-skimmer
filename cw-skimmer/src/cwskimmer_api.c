@@ -85,6 +85,20 @@ typedef struct cwskimmer_detector {
 
     cwskimmer_decode_callback decode_cb;
     void *decode_userdata;
+
+    cwskimmer_monitor_callback monitor_cb;
+    void *monitor_userdata;
+    float monitor_offset_hz;
+    int monitor_enabled;
+    float monitor_applied_offset;
+    double monitor_mix_phase;
+    double monitor_tone_phase;
+    float monitor_lp_i;
+    float monitor_lp_q;
+    float monitor_lp2_i;
+    float monitor_lp2_q;
+    float monitor_peak;
+    int monitor_spec_bins;
     
     /* Statistics */
     int samples_processed;
@@ -788,6 +802,7 @@ static void cwskimmer_emit_one_spectrum(cwskimmer_detector_t *detector,
 
     spectrum.power_spectrum = power_data;
     spectrum.num_bins = num_bins;
+    detector->monitor_spec_bins = num_bins;
     spectrum.center_frequency = cwskimmer_live_center_hz(detector);
     if (detector->audio_proc) {
         spectrum.bin_width = audio_processor_bin_width(detector->audio_proc);
@@ -1460,6 +1475,182 @@ void cwskimmer_set_decode_callback(cwskimmer_detector_t *detector,
     }
 }
 
+void cwskimmer_set_monitor_callback(cwskimmer_detector_t *detector,
+                                    cwskimmer_monitor_callback callback,
+                                    void *userdata) {
+    if (detector) {
+        pthread_mutex_lock(&detector->lock);
+        detector->monitor_cb = callback;
+        detector->monitor_userdata = userdata;
+        pthread_mutex_unlock(&detector->lock);
+    }
+}
+
+void cwskimmer_set_monitor_tone(cwskimmer_detector_t *detector,
+                                float offset_hz, int enabled) {
+    if (!detector) {
+        return;
+    }
+    pthread_mutex_lock(&detector->lock);
+    detector->monitor_offset_hz = offset_hz;
+    detector->monitor_enabled = enabled ? 1 : 0;
+    pthread_mutex_unlock(&detector->lock);
+}
+
+/*
+ * Heterodyne the spectrum bin the signal trace is reading.
+ * Complex IQ: the trace offset is already the baseband frequency.
+ * Real RX audio: bins are 0 Hz at the left, but the GUI offset is measured
+ * from the middle of that strip, so add half the strip back.
+ * Then lowpass about ±90 Hz (the trace's center bin) and play it.
+ * Receiver audio keeps its own pitch; wideband IQ is shifted to 700 Hz.
+ */
+static void cwskimmer_emit_monitor_audio(cwskimmer_detector_t *detector,
+                                         const float complex *iq, int count) {
+    cwskimmer_monitor_callback cb;
+    void *userdata;
+    float offset;
+    int enabled;
+    int sample_rate;
+    int spec_bins;
+    int real_audio;
+    float bin_width;
+    float tune;
+    float play_hz;
+    int offset_i;
+    const float cutoff_hz = 90.0f;
+
+    if (!detector || !iq || count <= 0) {
+        return;
+    }
+
+    pthread_mutex_lock(&detector->lock);
+    cb = detector->monitor_cb;
+    userdata = detector->monitor_userdata;
+    offset = detector->monitor_offset_hz;
+    enabled = detector->monitor_enabled;
+    sample_rate = detector->config.sample_rate;
+    spec_bins = detector->monitor_spec_bins;
+    pthread_mutex_unlock(&detector->lock);
+
+    if (!cb || !enabled || sample_rate <= 0) {
+        return;
+    }
+
+    real_audio = 0;
+    bin_width = 0.0f;
+    if (detector->audio_proc) {
+        real_audio = audio_processor_real_audio_mode(detector->audio_proc);
+        bin_width = audio_processor_bin_width(detector->audio_proc);
+    }
+
+    tune = offset;
+    if (real_audio && bin_width > 0.0f && spec_bins > 1) {
+        tune = offset + 0.5f * (float)spec_bins * bin_width;
+    }
+
+    play_hz = 700.0f;
+    if (real_audio && tune >= 150.0f && tune <= 4000.0f) {
+        play_hz = tune;
+    }
+
+    if (fabsf(tune - detector->monitor_applied_offset) > 80.0f) {
+        detector->monitor_lp_i = 0.0f;
+        detector->monitor_lp_q = 0.0f;
+        detector->monitor_lp2_i = 0.0f;
+        detector->monitor_lp2_q = 0.0f;
+        detector->monitor_peak = 0.0f;
+        LOG_INFO("Monitor audio following trace at %.0f Hz", tune);
+    }
+    detector->monitor_applied_offset = tune;
+
+    {
+        const float alpha = 1.0f - expf(-2.0f * (float)M_PI * cutoff_hz / (float)sample_rate);
+        const double mix_step = 2.0 * M_PI * (double)tune / (double)sample_rate;
+        const double tone_step = 2.0 * M_PI * (double)play_hz / (double)sample_rate;
+        double mix_phase = detector->monitor_mix_phase;
+        double tone_phase = detector->monitor_tone_phase;
+        float lp_i = detector->monitor_lp_i;
+        float lp_q = detector->monitor_lp_q;
+        float lp2_i = detector->monitor_lp2_i;
+        float lp2_q = detector->monitor_lp2_q;
+        float peak = detector->monitor_peak;
+
+        for (offset_i = 0; offset_i < count; ) {
+            enum { CHUNK = 2048 };
+            int16_t pcm[CHUNK];
+            int n = count - offset_i;
+            int i;
+
+            if (n > CHUNK) {
+                n = CHUNK;
+            }
+            for (i = 0; i < n; ++i) {
+                float re = crealf(iq[offset_i + i]);
+                float im = cimagf(iq[offset_i + i]);
+                float mix_c = (float)cos(mix_phase);
+                float mix_s = (float)sin(mix_phase);
+                float base_i = re * mix_c + im * mix_s;
+                float base_q = -re * mix_s + im * mix_c;
+                float tone_c;
+                float tone_s;
+                float level;
+                float audio;
+                float gain;
+
+                /* Two one-poles: about the width of the trace's center bins. */
+                lp_i += alpha * (base_i - lp_i);
+                lp_q += alpha * (base_q - lp_q);
+                lp2_i += alpha * (lp_i - lp2_i);
+                lp2_q += alpha * (lp_q - lp2_q);
+
+                level = sqrtf(lp2_i * lp2_i + lp2_q * lp2_q);
+                if (level > peak) {
+                    peak += 0.03f * (level - peak);
+                } else {
+                    peak += 0.00015f * (level - peak);
+                }
+
+                tone_c = (float)cos(tone_phase);
+                tone_s = (float)sin(tone_phase);
+                audio = lp2_i * tone_c - lp2_q * tone_s;
+                gain = 0.35f / fmaxf(peak, 1.0e-5f);
+                if (gain > 80.0f) {
+                    gain = 80.0f;
+                }
+                audio *= gain;
+                if (audio > 1.0f) {
+                    audio = 1.0f;
+                } else if (audio < -1.0f) {
+                    audio = -1.0f;
+                }
+                pcm[i] = (int16_t)(audio * 28000.0f + (audio >= 0.0f ? 0.5f : -0.5f));
+
+                mix_phase += mix_step;
+                if (mix_phase >= 2.0 * M_PI) {
+                    mix_phase -= 2.0 * M_PI;
+                } else if (mix_phase < 0.0) {
+                    mix_phase += 2.0 * M_PI;
+                }
+                tone_phase += tone_step;
+                if (tone_phase >= 2.0 * M_PI) {
+                    tone_phase -= 2.0 * M_PI;
+                }
+            }
+            cb(pcm, n, userdata);
+            offset_i += n;
+        }
+
+        detector->monitor_mix_phase = mix_phase;
+        detector->monitor_tone_phase = tone_phase;
+        detector->monitor_lp_i = lp_i;
+        detector->monitor_lp_q = lp_q;
+        detector->monitor_lp2_i = lp2_i;
+        detector->monitor_lp2_q = lp2_q;
+        detector->monitor_peak = peak;
+    }
+}
+
 #ifdef CONN_DEBUG
 #define CONN_DBG(fmt, ...) do { \
     fprintf(stderr, "[CONN] " fmt "\n", ##__VA_ARGS__); \
@@ -1522,16 +1713,32 @@ int cwskimmer_start(cwskimmer_detector_t *detector) {
         return -1;
     }
     
-    /* Connect to radio */
-    CONN_DBG("cwskimmer_start: calling tci_client_connect ...");
-    if (tci_client_connect(detector->radio) < 0) {
-        CONN_DBG("cwskimmer_start FAILED: tci_client_connect returned error");
-        LOG_ERROR("Failed to connect to radio");
-        tci_client_destroy(detector->radio);
-        detector->radio = NULL;
-        detector->loop_active = 0;
-        pthread_mutex_unlock(&detector->lock);
-        return -1;
+    /* Training file replaces the live radio. Same TCI frame parser. */
+    if (detector->config.training_file[0]) {
+        CONN_DBG("cwskimmer_start: opening training file %s",
+                 detector->config.training_file);
+        if (tci_client_open_training(detector->radio,
+                                     detector->config.training_file) < 0) {
+            LOG_ERROR("Failed to open training file %s",
+                      detector->config.training_file);
+            tci_client_destroy(detector->radio);
+            detector->radio = NULL;
+            detector->loop_active = 0;
+            pthread_mutex_unlock(&detector->lock);
+            return -1;
+        }
+    } else {
+        /* Connect to radio */
+        CONN_DBG("cwskimmer_start: calling tci_client_connect ...");
+        if (tci_client_connect(detector->radio) < 0) {
+            CONN_DBG("cwskimmer_start FAILED: tci_client_connect returned error");
+            LOG_ERROR("Failed to connect to radio");
+            tci_client_destroy(detector->radio);
+            detector->radio = NULL;
+            detector->loop_active = 0;
+            pthread_mutex_unlock(&detector->lock);
+            return -1;
+        }
     }
     
     /* Apply stream preference (iq | audio) then subscribe */
@@ -1733,15 +1940,23 @@ int cwskimmer_start(cwskimmer_detector_t *detector) {
                 }
             }
 
-            while (available >= IQ_PROCESS_CHUNK &&
-                   chunks_this_loop < MAX_IQ_CHUNKS_PER_LOOP &&
+            while (chunks_this_loop < MAX_IQ_CHUNKS_PER_LOOP &&
                    detector->running) {
+                int need = IQ_PROCESS_CHUNK;
+                if (available < need) {
+                    /* Play the short tail after a training file hits EOF. */
+                    if (tci_training_at_eof() && available > 0) {
+                        need = available;
+                    } else {
+                        break;
+                    }
+                }
                 int got;
                 cw_signal_t signals[10];
                 int num_signals = 0;
 
                 perf_begin(PERF_IQ_BLOCK);
-                got = tci_get_iq_samples(detector->radio, iq_buffer, IQ_PROCESS_CHUNK);
+                got = tci_get_iq_samples(detector->radio, iq_buffer, need);
                 perf_note_value(PERF_IQ_BLOCK, (double)got);
                 if (got <= 0) {
                     perf_end(PERF_IQ_BLOCK);
@@ -1753,6 +1968,8 @@ int cwskimmer_start(cwskimmer_detector_t *detector) {
                     cw_capture_ring_write(detector->iq_capture, iq_buffer, got);
                     pthread_mutex_unlock(&detector->lock);
                 }
+
+                cwskimmer_emit_monitor_audio(detector, iq_buffer, got);
 
                 /* deskHPSDR audio_start vs true IQ — switches single-sided spectrum */
                 if (detector->radio) {
@@ -1923,6 +2140,11 @@ int cwskimmer_start(cwskimmer_detector_t *detector) {
             }
             /* Not connected: sleep briefly to avoid busy-waiting */
             usleep(100000);  /* Sleep 100ms when disconnected */
+        }
+
+        if (tci_training_finished(detector->radio)) {
+            LOG_INFO("Training file consumed (%d samples)", detector->samples_processed);
+            break;
         }
         
         /* Poll DDS/VFO so waterfall RF labels follow the radio when the operator tunes */
@@ -2133,6 +2355,12 @@ int cwskimmer_config_set(cwskimmer_detector_t *detector,
         }
         detector->config.multi_decode_channels = n;
         LOG_INFO("multi_decode_channels → %d", n);
+    } else if (strcmp(key, "training_file") == 0) {
+        strncpy(detector->config.training_file, value,
+                sizeof(detector->config.training_file) - 1);
+        detector->config.training_file[sizeof(detector->config.training_file) - 1] = '\0';
+        LOG_INFO("training_file → %s",
+                 detector->config.training_file[0] ? detector->config.training_file : "(live radio)");
     } else if (strcmp(key, "tci_stream_mode") == 0) {
         int want_audio = (strcasecmp(value, "audio") == 0);
         tci_stream_mode_t mode = want_audio ? TCI_STREAM_MODE_AUDIO : TCI_STREAM_MODE_IQ;
@@ -2174,7 +2402,7 @@ const char *cwskimmer_config_get(cwskimmer_detector_t *detector,
                                  const char *key) {
     if (!detector || !key) return NULL;
     
-    static char buffer[256];
+    static char buffer[512];
     
     pthread_mutex_lock(&detector->lock);
     
@@ -2207,6 +2435,8 @@ const char *cwskimmer_config_get(cwskimmer_detector_t *detector,
                  detector->config.tci_stream_mode[0]
                      ? detector->config.tci_stream_mode
                      : "iq");
+    } else if (strcmp(key, "training_file") == 0) {
+        snprintf(buffer, sizeof(buffer), "%s", detector->config.training_file);
     } else {
         pthread_mutex_unlock(&detector->lock);
         return NULL;

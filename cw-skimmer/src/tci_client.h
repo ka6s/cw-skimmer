@@ -158,4 +158,36 @@ int tci_request_dds_frequency(tci_client_t *client, int receiver);
  */
 void tci_service_websocket(void);
 
+/**
+ * Play a training file instead of a live radio.
+ * The file is a TCP TCI byte stream: semicolon-terminated text
+ * (including cw_train transcript lines) followed by IQ frames.
+ * @return 0 on success, -1 on error
+ */
+int tci_client_open_training(tci_client_t *client, const char *path);
+
+/** 1 while a training file is the sample source. */
+int tci_training_active(void);
+
+/** 1 after the training file has been fully read (tail may still be buffered). */
+int tci_training_at_eof(void);
+
+/**
+ * 1 when the training file is exhausted and every sample has been pulled
+ * out of the IQ buffer. 0 for a live radio.
+ */
+int tci_training_finished(const tci_client_t *client);
+
+/** Number of cw_train transcript lines read from the open training file. */
+int tci_training_transcript_count(void);
+
+/**
+ * Copy one expected-decode record (index 0 .. count-1).
+ * Any out pointer may be NULL.
+ * @return 0 on success, -1 if index is out of range
+ */
+int tci_training_transcript(int index, float *offset_hz, float *atten_db,
+                            float *fade_db, int *wpm, float *start_s,
+                            char *text, int text_max);
+
 #endif

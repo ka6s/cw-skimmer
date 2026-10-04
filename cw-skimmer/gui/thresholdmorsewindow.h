@@ -80,6 +80,17 @@ private:
     void checkLetterTimeout(qint64 nowMs);
     void appendChar(QChar ch);
     void flushPendingLetter();
+    void emitOneLetter(const QVector<double> &durs, const QVector<float> &peaks);
+    /** Gap at least this long separates letters inside one held run. */
+    double splitGapSeconds(const QVector<double> &gaps) const;
+    /** Word gap, tightened when the held gaps show a clear element cluster. */
+    double wordCutForGaps(const QVector<double> &gaps) const;
+    /**
+     * Emit letters whose following gap is already a letter or word boundary.
+     * Leaves a still-open tail in the pending buffers.
+     * @return true when nothing remains pending
+     */
+    bool releaseClosedLetters();
     void commitPendingMarkToLetter();
     /**
      * While key is high, detect amplitude valleys (element gaps inside a
@@ -124,6 +135,8 @@ private:
     /* Current letter as mark durations — classified only at flush with latest unit */
     QVector<double> m_pendingMarkDurs;
     QVector<float> m_pendingMarkPeaks; /* peak power_db per pending mark */
+    /* Gap after pending mark i, while the letter is still open. */
+    QVector<double> m_pendingGaps;
     QString m_scrollText;       /* committed characters (append-only) */
     QString m_targetLabel;
     float m_thresholdDb;

@@ -1,0 +1,16 @@
+# CW skimmer training set 04
+# stream=set_04.tcistream
+# center_hz=14074000 sample_rate=48000 duration_s=40
+# noise_sigma=0.00050  reference_amplitude=0.20 (0 dB, full strength)
+# English dictionary words only. Speed is 5 to 30 WPM.
+# Carriers are at least 2000 Hz apart.
+# Each tone's level moves at random from barely detectable (-62.3 dB) to full strength (0.0 dB).
+# atten_db is the midpoint of that swing; fade_db is half of it.
+# Each tone starts at 0.25s and is keyed until the file is full.
+# end_s is the sample time when the last Morse element ends.
+# text is exactly the characters that were keyed.
+# index offset_hz atten_db fade_db wpm start_s end_s text
+1	-16000.0	-31.1	31.1	5	0.250	36.970	A HEN CLOSE THE PATH
+2	-6000.0	-31.1	31.1	14	0.250	39.076	GOOD DAY TO YOU THE HORSE IS HOME RED HEN AND THE DOG IN
+3	+3000.0	-31.1	31.1	21	0.250	39.395	THE RIVER IS NEAR DARK NIGHT ON THE HILL GOOD LIGHT ON THE PATH THE OLD BARN IS NEAR CAT
+4	+15000.0	-31.1	31.1	29	0.250	39.432	PLEASE SEND A SLOW CLEAR COPY COPY THIS GOOD WORD THE SHEEP AND THE GOAT LEFT OF THE GREEN FIELD THE SUN IS WARM HEN

@@ -10,6 +10,7 @@
 #ifndef CWSKIMMER_API_H
 #define CWSKIMMER_API_H
 
+#include <stdint.h>
 #include <time.h>
 
 #ifdef __cplusplus
@@ -79,6 +80,8 @@ typedef void (*cwskimmer_log_callback)(const char *message, int level, void *use
 typedef void (*cwskimmer_stats_callback)(const cwskimmer_stats_t *stats, void *userdata);
 typedef void (*cwskimmer_spectrum_callback)(const cwskimmer_spectrum_t *spectrum, void *userdata);
 typedef void (*cwskimmer_decode_callback)(const cwskimmer_decode_t *decode, void *userdata);
+/* 48 kHz mono signed-16 PCM of the selected spectrum channel, shifted to a 700 Hz sidetone. */
+typedef void (*cwskimmer_monitor_callback)(const int16_t *pcm, int sample_count, void *userdata);
 
 /**
  * Create a detector instance
@@ -133,6 +136,21 @@ void cwskimmer_set_spectrum_callback(cwskimmer_detector_t *detector,
 void cwskimmer_set_decode_callback(cwskimmer_detector_t *detector,
                                    cwskimmer_decode_callback callback,
                                    void *userdata);
+
+/**
+ * Register callback for monitor audio of the selected spectrum channel.
+ * pcm is 48 kHz mono s16 and is only valid for the duration of the call.
+ */
+void cwskimmer_set_monitor_callback(cwskimmer_detector_t *detector,
+                                    cwskimmer_monitor_callback callback,
+                                    void *userdata);
+
+/**
+ * Tune the monitor to a spectrum offset (Hz from the radio center).
+ * enabled=0 sends nothing. Safe to call while the detector is running.
+ */
+void cwskimmer_set_monitor_tone(cwskimmer_detector_t *detector,
+                                float offset_hz, int enabled);
 
 /**
  * Start detection (begins main processing loop)

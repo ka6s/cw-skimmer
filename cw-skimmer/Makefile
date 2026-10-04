@@ -55,7 +55,9 @@ TEST_OBJECTS := $(TEST_OBJECTS:$(TESTDIR)/%.c=$(OBJDIR)/%.o)
 # Directories
 DIRS = $(OBJDIR) $(BINDIR)
 
-.PHONY: all clean debug test replay synth help gui gui-clean
+.PHONY: all clean debug test replay synth help gui gui-clean training-gen training-data
+
+TRAIN_GEN = $(BINDIR)/cw-training-gen
 
 all: $(DIRS) $(TARGET) shared-lib
 
@@ -130,11 +132,20 @@ clean: gui-clean
 	rm -rf $(OBJDIR) $(BINDIR)
 	@echo "✓ Cleaned"
 
+training-gen: $(DIRS)
+	$(CC) $(CFLAGS) -I$(SRCDIR) -o $(TRAIN_GEN) tools/cw_training_gen.c -lm
+	@echo "✓ Built: $(TRAIN_GEN)"
+
+training-data: training-gen
+	./$(TRAIN_GEN) training
+
 help:
 	@echo "CW Skimmer Makefile targets:"
-	@echo "  make all      - Build the main CLI executable and shared library"
-	@echo "  make gui      - Build the Qt5 GUI (requires Qt5)"
-	@echo "  make debug    - Build CLI with debug symbols"
-	@echo "  make test     - Build and run tests"
-	@echo "  make clean    - Remove build artifacts"
-	@echo "  make help     - Show this help"
+	@echo "  make all            - Build the main CLI executable and shared library"
+	@echo "  make gui            - Build the Qt5 GUI (requires Qt5)"
+	@echo "  make debug          - Build CLI with debug symbols"
+	@echo "  make test           - Build and run tests"
+	@echo "  make training-gen   - Build the TCI training-file generator"
+	@echo "  make training-data  - Write training/set_01..10 TCI streams and transcripts"
+	@echo "  make clean          - Remove build artifacts (keeps training/)"
+	@echo "  make help           - Show this help"

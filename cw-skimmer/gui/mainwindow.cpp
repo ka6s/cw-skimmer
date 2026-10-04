@@ -10,7 +10,9 @@
 #include "signaltracewindow.h"
 #include "thresholdmorsewindow.h"
 #include "maskmorsewindow.h"
+#include "spectrummorsewindow.h"
 #include "multichanneldecoder.h"
+#include "audiomonitor.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -19,6 +21,7 @@
 #include <QMenuBar>
 #include <QMenu>
 #include <QAction>
+#include <QScrollBar>
 #include <QStatusBar>
 #include <QMessageBox>
 #include <QThread>
@@ -33,6 +36,7 @@
 #include <QDateTime>
 #include <QStackedWidget>
 #include <QGroupBox>
+#include <algorithm>
 #include <cstdio>
 #include <cmath>
 
@@ -55,20 +59,31 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , m_spectrumWidget(nullptr)
     , m_decodeWidget(nullptr)
+    , m_spectrumScroll(nullptr)
+    , m_spectrumBins(0)
+    , m_spectrumBinWidth(0.0f)
+    , m_spectrumViewLow(0.0f)
+    , m_spectrumViewSet(false)
     , m_traceWindow(nullptr)
     , m_morseStack(nullptr)
     , m_morseWindow(nullptr)
     , m_maskWindow(nullptr)
+    , m_scopeWindow(nullptr)
     , m_multiDecoder(nullptr)
     , m_morseBackendButton(nullptr)
     , m_tciStreamButton(nullptr)
     , m_recordButton(nullptr)
-    , m_morseBackend(MorseDecoderBackend::Threshold)
+    , m_trainingFileButton(nullptr)
+    , m_playTrainingButton(nullptr)
+    , m_trainingPlayback(false)
+    , m_audioMonitor(nullptr)
+    , m_morseBackend(MorseDecoderBackend::Spectrum)
     , m_tciStreamMode(TciStreamMode::IQ)
     , m_workerThread(nullptr)
     , m_worker(nullptr)
     , m_statusLabel(nullptr)
     , m_connectionLabel(nullptr)
+    , m_connectLamp(nullptr)
     , m_bufferLabel(nullptr)
     , m_cpuLabel(nullptr)
     , m_queueLabel(nullptr)
@@ -114,9 +129,19 @@ void MainWindow::createUI()
     m_spectrumWidget = new SpectrumWidget();
     m_decodeWidget = new DecodeWidget();
     m_multiDecoder = new MultiChannelDecoder(this);
-    m_multiDecoder->setMaxActiveChannels(1);
-    connect(m_multiDecoder, &MultiChannelDecoder::channelsUpdated,
-            m_decodeWidget, &DecodeWidget::setChannels);
+    m_multiDecoder->setMaxActiveChannels(10);
+    m_multiDecoder->setBackend(MultiChannelDecoder::Backend::Spectrum);
+    connect(m_multiDecoder, &MultiChannelDecoder::channelsUpdated, this,
+            [this](const QVector<MultiChannelDecoder::ChannelView> &channels) {
+                if (!m_decodeWidget) {
+                    return;
+                }
+                const bool selected = m_traceWindow && m_traceWindow->isVisible()
+                                      && m_traceWindow->hasTarget();
+                m_decodeWidget->setSelectedSignal(
+                    selected, selected ? m_traceWindow->targetOffsetHz() : 0.0f);
+                m_decodeWidget->setChannels(channels);
+            });
 
     /* Record sits above the spectrum (scope still owns the capture buffer). */
     m_recordButton = new QPushButton(QStringLiteral("Record"), centralWidget);
@@ -134,27 +159,66 @@ void MainWindow::createUI()
     spectrumBar->addWidget(m_recordButton, 0, Qt::AlignLeft);
     spectrumBar->addStretch(1);
 
+    /* Decode lines share the waterfall's height so each copy sits on its trace. */
+    auto *spectrumPane = new QWidget(centralWidget);
+    auto *paneLayout = new QHBoxLayout(spectrumPane);
+    paneLayout->setContentsMargins(0, 0, 0, 0);
+    paneLayout->setSpacing(0);
+    paneLayout->addWidget(m_spectrumWidget, 1);
+    paneLayout->addWidget(m_decodeWidget, 0);
+    m_spectrumScroll = new QScrollBar(Qt::Vertical, spectrumPane);
+    m_spectrumScroll->setObjectName(QStringLiteral("spectrumScroll"));
+    m_spectrumScroll->setRange(0, 0);
+    m_spectrumScroll->setEnabled(false);
+    m_spectrumScroll->setToolTip(
+        QStringLiteral("Scrolls the 10 kHz spectrum window and the copy beside it together."));
+    paneLayout->addWidget(m_spectrumScroll, 0);
+    connect(m_spectrumScroll, &QScrollBar::valueChanged, this, [this](int) {
+        applySpectrumView();
+    });
+    connect(m_spectrumWidget, &SpectrumWidget::verticalScrollRequested, this,
+            [this](int deltaY) {
+                if (!m_spectrumScroll || !m_spectrumScroll->isEnabled()) {
+                    return;
+                }
+                const int step = std::max(1, m_spectrumScroll->singleStep());
+                const int notches = (deltaY > 0) ? std::max(1, deltaY / 120)
+                                                 : std::min(-1, deltaY / 120);
+                m_spectrumScroll->setValue(m_spectrumScroll->value() - notches * step);
+            });
+    connect(m_decodeWidget, &DecodeWidget::verticalScrollRequested, this,
+            [this](int deltaY) {
+                if (!m_spectrumScroll || !m_spectrumScroll->isEnabled()) {
+                    return;
+                }
+                const int step = std::max(1, m_spectrumScroll->singleStep());
+                const int notches = (deltaY > 0) ? std::max(1, deltaY / 120)
+                                                 : std::min(-1, deltaY / 120);
+                m_spectrumScroll->setValue(m_spectrumScroll->value() - notches * step);
+            });
+
     auto *spectrumColumn = new QWidget(centralWidget);
     auto *spectrumColumnLayout = new QVBoxLayout(spectrumColumn);
     spectrumColumnLayout->setContentsMargins(0, 0, 0, 0);
     spectrumColumnLayout->setSpacing(2);
     spectrumColumnLayout->addLayout(spectrumBar);
-    spectrumColumnLayout->addWidget(m_spectrumWidget, 1);
+    spectrumColumnLayout->addWidget(spectrumPane, 1);
 
     QWidget *spectrumRow = new QWidget(centralWidget);
     QHBoxLayout *spectrumLayout = new QHBoxLayout(spectrumRow);
     spectrumLayout->setContentsMargins(0, 0, 0, 0);
     spectrumLayout->addWidget(spectrumColumn, 1);
-    spectrumLayout->addWidget(m_decodeWidget, 0);
     spectrumRow->setLayout(spectrumLayout);
 
     /* Bottom pane: embedded Morse decoder (Threshold / Mask stack) */
     m_morseStack = new QStackedWidget(centralWidget);
     m_morseWindow = new ThresholdMorseWindow(m_morseStack);
     m_maskWindow = new MaskMorseWindow(m_morseStack);
+    m_scopeWindow = new SpectrumMorseWindow(m_morseStack);
     m_morseStack->addWidget(m_morseWindow);
     m_morseStack->addWidget(m_maskWindow);
-    m_morseStack->setCurrentWidget(m_morseWindow);
+    m_morseStack->addWidget(m_scopeWindow);
+    m_morseStack->setCurrentWidget(m_scopeWindow);
 
     /* Dit/dah boxes live on the Signal Trace scope, not a second panel. */
     connect(m_maskWindow, &MaskMorseWindow::maskOverlayChanged, this,
@@ -203,6 +267,13 @@ void MainWindow::createMenuBar()
             m_traceWindow->activateWindow();
         }
     });
+    QAction *trainingAction = toolsMenu->addAction("&Training file…");
+    trainingAction->setToolTip("Choose a .tcistream file. Playback starts only from Start playback.");
+    connect(trainingAction, &QAction::triggered, this, &MainWindow::onChooseTrainingFile);
+    QAction *playbackAction = toolsMenu->addAction("Start &playback");
+    playbackAction->setToolTip("Play the chosen training file through the detector");
+    connect(playbackAction, &QAction::triggered, this, &MainWindow::onStartPlaybackClicked);
+    toolsMenu->addSeparator();
     QAction *playAction = toolsMenu->addAction("&Play capture…");
     playAction->setToolTip(
         "Replay a saved .wav / .cwtrace through Signal Trace and Threshold Morse "
@@ -243,6 +314,15 @@ void MainWindow::createToolBar()
     connect(stopButton, &QPushButton::clicked, this, &MainWindow::onStopClicked);
     toolBar->addWidget(stopButton);
 
+    m_connectLamp = new QLabel(toolBar);
+    m_connectLamp->setObjectName(QStringLiteral("connectLamp"));
+    m_connectLamp->setAlignment(Qt::AlignCenter);
+    m_connectLamp->setMinimumWidth(148);
+    m_connectLamp->setToolTip(
+        QStringLiteral("Green when Start has a live TCI session with the radio."));
+    toolBar->addWidget(m_connectLamp);
+    updateConnectionIndicator();
+
     toolBar->addSeparator();
 
     // Settings button
@@ -254,6 +334,19 @@ void MainWindow::createToolBar()
     QPushButton *clearButton = new QPushButton("Clear");
     connect(clearButton, &QPushButton::clicked, this, &MainWindow::onClearClicked);
     toolBar->addWidget(clearButton);
+
+    toolBar->addSeparator();
+    m_trainingFileButton = new QPushButton("Training file…");
+    m_trainingFileButton->setToolTip(
+        "Choose a .tcistream training file. This does not start playback.");
+    connect(m_trainingFileButton, &QPushButton::clicked, this, &MainWindow::onChooseTrainingFile);
+    toolBar->addWidget(m_trainingFileButton);
+
+    m_playTrainingButton = new QPushButton("Start playback");
+    m_playTrainingButton->setToolTip("Play the chosen training file through the detector");
+    m_playTrainingButton->setEnabled(false);
+    connect(m_playTrainingButton, &QPushButton::clicked, this, &MainWindow::onStartPlaybackClicked);
+    toolBar->addWidget(m_playTrainingButton);
 
     toolBar->addSeparator();
     QPushButton *playButton = new QPushButton("Play capture…");
@@ -274,15 +367,25 @@ void MainWindow::createToolBar()
     toolBar->addSeparator();
     m_morseBackendButton = new QPushButton(this);
     m_morseBackendButton->setToolTip(
-        "Toggle Morse decoder backend:\n"
-        "  Threshold — mark/space + Auto WPM (classic pipeline)\n"
-        "  Mask — dit/dah trapezoid geometric masks (width∝WPM, height∝peak)\n"
-        "Both use the Signal Trace envelope; multi-channel follows the same mode.");
+        "Cycle Morse decoder:\n"
+        "  Threshold — mark/space on the signal trace\n"
+        "  Mask — dit/dah boxes on the signal trace\n"
+        "  Spectrum — white/black runs on the waterfall, copied 6 dahs behind\n"
+        "The selected decoder watches the 10 strongest signals.\n"
+        "Click one on the waterfall to copy it in the Morse Decoder window.\n"
+        "The others stay listed beside the spectrum.");
     connect(m_morseBackendButton, &QPushButton::clicked, this, &MainWindow::onToggleMorseBackend);
     toolBar->addWidget(m_morseBackendButton);
 
     updateMorseBackendButton();
     updateTciStreamButton();
+
+    toolBar->addSeparator();
+    m_audioMonitor = new AudioMonitor(this);
+    toolBar->addWidget(new QLabel(QStringLiteral("Audio out:"), toolBar));
+    toolBar->addWidget(m_audioMonitor->deviceCombo());
+    toolBar->addWidget(new QLabel(QStringLiteral("Vol"), toolBar));
+    toolBar->addWidget(m_audioMonitor->volumeSlider());
 }
 
 void MainWindow::createStatusBar()
@@ -327,6 +430,20 @@ void MainWindow::initializeWorker()
     m_spectrumModeLabel = QStringLiteral("WIDE");
     applyTciStreamMode();
 
+    if (m_multiDecoder) {
+        bool channelsOk = false;
+        const int configuredChannels =
+            m_worker->configValue(QStringLiteral("multi_decode_channels")).toInt(&channelsOk);
+        if (channelsOk && configuredChannels > 0) {
+            m_multiDecoder->setMaxActiveChannels(configuredChannels);
+        }
+    }
+
+    const QString configuredTraining = m_worker->configValue(QStringLiteral("training_file"));
+    if (!configuredTraining.isEmpty()) {
+        setTrainingFile(configuredTraining);
+    }
+
     // Connect worker signals
     connect(m_worker, &DetectorWorker::signalDetected, this, &MainWindow::onSignalDetected);
     connect(m_worker, &DetectorWorker::spotReported, this, &MainWindow::onSpotReported);
@@ -335,6 +452,7 @@ void MainWindow::initializeWorker()
             Qt::QueuedConnection);
     connect(m_worker, &DetectorWorker::decodeUpdated, this, &MainWindow::onDecodeUpdated,
             Qt::QueuedConnection);
+
     connect(m_worker, &DetectorWorker::logMessage, this, &MainWindow::onLogMessage);
     connect(m_worker, &DetectorWorker::statusChanged, this, &MainWindow::onWorkerStatusChanged);
     connect(m_worker, &DetectorWorker::errorOccurred, this, &MainWindow::onWorkerError);
@@ -381,7 +499,12 @@ void MainWindow::ensureTraceWindow()
                 if (m_spectrumWidget) {
                     m_spectrumWidget->setTraceOffsetHz(offsetHz);
                 }
+                updateMonitorChannel();
             });
+    if (m_audioMonitor) {
+        connect(m_traceWindow, &SignalTraceWindow::liveEnvelope,
+                m_audioMonitor, &AudioMonitor::setTraceEnvelope);
+    }
 }
 
 void MainWindow::ensureMorsePanels()
@@ -409,6 +532,11 @@ void MainWindow::updateMorseBackendButton()
         m_morseBackendButton->setText(QStringLiteral("Decoder: Mask"));
         m_morseBackendButton->setStyleSheet(
             "QPushButton { background: #4a1a6e; color: #e8ccff; font-weight: bold; "
+            "padding: 4px 10px; }");
+    } else if (m_morseBackend == MorseDecoderBackend::Spectrum) {
+        m_morseBackendButton->setText(QStringLiteral("Decoder: Spectrum"));
+        m_morseBackendButton->setStyleSheet(
+            "QPushButton { background: #3a3a3a; color: #f4f4f4; font-weight: bold; "
             "padding: 4px 10px; }");
     } else {
         m_morseBackendButton->setText(QStringLiteral("Decoder: Threshold"));
@@ -480,6 +608,12 @@ void MainWindow::showActiveMorsePanel()
         }
         return;
     }
+    if (m_morseBackend == MorseDecoderBackend::Spectrum) {
+        if (m_scopeWindow && m_morseStack) {
+            m_morseStack->setCurrentWidget(m_scopeWindow);
+        }
+        return;
+    }
 
     if (m_morseWindow && m_morseStack) {
         m_morseStack->setCurrentWidget(m_morseWindow);
@@ -546,6 +680,14 @@ void MainWindow::onStartClicked()
     }
 
     m_freezeDisplay = false;
+    m_trainingPlayback = false;
+    m_isConnected = false;
+    updateConnectionIndicator();
+    /* Live radio. A chosen training file is used only by Start playback. */
+    const QString noTrainingFile;
+    QMetaObject::invokeMethod(m_worker, "setConfig", Qt::QueuedConnection,
+                              Q_ARG(QString, QStringLiteral("training_file")),
+                              Q_ARG(QString, noTrainingFile));
     /* Default to full 48 kHz wide waterfall (production path) */
     QMetaObject::invokeMethod(m_worker, "setConfig", Qt::QueuedConnection,
                               Q_ARG(QString, QStringLiteral("spectrum_span_hz")),
@@ -568,6 +710,12 @@ void MainWindow::stopDetection(const QString &reason)
 
     m_freezeDisplay = true;
     m_isRunning = false;
+    m_isConnected = false;
+    /* Drop the speaker before flushing events. Deleting it while its
+     * backend still has queued notifications crashes after a long run. */
+    if (m_audioMonitor) {
+        m_audioMonitor->setStreamActive(false, false);
+    }
     m_statusLabel->setText("Status: STOPPING...");
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 
@@ -648,6 +796,10 @@ void MainWindow::onClearClicked()
     if (m_maskWindow) {
         m_maskWindow->clearDecode();
     }
+    if (m_scopeWindow) {
+        m_scopeWindow->clearDecode();
+        m_scopeWindow->resetTiming();
+    }
 }
 
 void MainWindow::onSignalDetected(float frequency, float freqOffsetHz, float snr, float confidence,
@@ -717,29 +869,58 @@ void MainWindow::onSpectrumColumnsReady(QVector<QVector<float>> columns, float c
     if (m_decodeWidget) {
         m_decodeWidget->setFrequencyScale(centerFreq, binWidth, columns.last().size());
     }
+    m_spectrumBins = columns.last().size();
+    m_spectrumBinWidth = binWidth;
+    syncSpectrumScroll(m_spectrumBins, m_spectrumBinWidth);
     if (m_spectrumWidget) {
         m_spectrumWidget->appendSpectrumColumns(columns, centerFreq, binWidth);
     }
     /*
-     * Parallel multi-channel CW Decode (up to 10 strongest peaks).
-     * Backend follows Decoder button: Threshold or Mask (trapezoid).
-     * Completely independent of the bottom Morse panel engines.
+     * The ten side rows each keep their own Spectrum decoder.
+     * The Decoder button only changes the bottom Morse pane.
      * Listen bandwidth matches CW Signal Trace "Listen bins ±" when open.
      */
     if (m_multiDecoder) {
         const int halfBins =
             (m_traceWindow && m_traceWindow->hasTarget()) ? m_traceWindow->halfBins() : 1;
         m_multiDecoder->setHalfBins(halfBins);
-        const float noise =
+        const float batchNoise =
             m_spectrumWidget ? m_spectrumWidget->latestNoiseFloorDb() : -95.0f;
         for (const QVector<float> &col : columns) {
-            if (!col.isEmpty()) {
-                m_multiDecoder->processSpectrumColumn(col, binWidth, centerFreq, noise);
+            if (col.isEmpty()) {
+                continue;
             }
+            const float noise = m_spectrumWidget
+                                    ? m_spectrumWidget->estimateNoiseFloor(col)
+                                    : batchNoise;
+            m_multiDecoder->processSpectrumColumn(col, binWidth, centerFreq, noise);
         }
     }
     /* Feed single-signal scope even while main display is live */
     feedTraceFromColumns(columns, binWidth);
+
+    /*
+     * Spectrum decoder reads the waterfall pixels at the selected trace
+     * frequency: white (lit) is key-down, black and near-black are key-up.
+     */
+    if (m_morseBackend == MorseDecoderBackend::Spectrum && m_scopeWindow
+        && m_traceWindow && m_traceWindow->isVisible() && m_traceWindow->hasTarget()
+        && m_spectrumWidget) {
+        const float offsetHz = m_traceWindow->targetOffsetHz();
+        const int halfBins = m_traceWindow->halfBins();
+        for (const QVector<float> &col : columns) {
+            if (col.isEmpty()) {
+                continue;
+            }
+            const float noise = m_spectrumWidget->estimateNoiseFloor(col);
+            const float power = SpectrumWidget::powerAtOffset(col, offsetHz, binWidth, halfBins);
+            m_scopeWindow->feedColumn(power, noise, binWidth);
+        }
+        if (m_traceWindow) {
+            m_scopeWindow->setTargetLabel(
+                QString("IF %1 Hz").arg(offsetHz, 0, 'f', 0));
+        }
+    }
 }
 
 void MainWindow::onSpectrumModeWide()
@@ -792,14 +973,32 @@ void MainWindow::onLogMessage(QString message, int level)
     fflush(stderr);
 }
 
+void MainWindow::updateMonitorChannel()
+{
+    const bool selected = m_spectrumWidget && m_spectrumWidget->hasTraceSelection() &&
+                          m_traceWindow && m_traceWindow->hasTarget() &&
+                          m_traceWindow->isVisible();
+    if (m_audioMonitor) {
+        m_audioMonitor->setStreamActive(m_isRunning, selected);
+    }
+}
+
 void MainWindow::onWorkerStatusChanged(bool running)
 {
     m_isRunning = running;
     if (running) {
         m_freezeDisplay = false;
+        updateMonitorChannel();
         updateStatusBar();
-    } else if (!m_freezeDisplay) {
-        updateStatusBar();
+    } else {
+        if (m_trainingPlayback && !m_freezeDisplay) {
+            onLogMessage(QStringLiteral("Training playback finished"), 1);
+        }
+        m_trainingPlayback = false;
+        updateMonitorChannel();
+        if (!m_freezeDisplay) {
+            updateStatusBar();
+        }
     }
 }
 
@@ -829,21 +1028,33 @@ void MainWindow::onSignalTraceRequested(float freqOffsetHz, float absFreqHz)
     m_traceWindow->activateWindow();
 
     if (m_morseWindow) {
+        m_morseWindow->clearDecode();
         m_morseWindow->resetTiming();
         m_morseWindow->setThresholdDb(m_traceWindow->thresholdDb());
         m_morseWindow->setTargetLabel(
             QString("IF %1 Hz").arg(m_traceWindow->targetOffsetHz(), 0, 'f', 0));
     }
     if (m_maskWindow) {
+        m_maskWindow->clearDecode();
         m_maskWindow->resetTiming();
         m_maskWindow->setTargetLabel(
             QString("IF %1 Hz").arg(m_traceWindow->targetOffsetHz(), 0, 'f', 0));
+    }
+    if (m_scopeWindow) {
+        m_scopeWindow->clearDecode();
+        m_scopeWindow->resetTiming();
+        m_scopeWindow->setTargetLabel(
+            QString("IF %1 Hz").arg(m_traceWindow->targetOffsetHz(), 0, 'f', 0));
+    }
+    if (m_decodeWidget) {
+        m_decodeWidget->setSelectedSignal(true, m_traceWindow->targetOffsetHz());
     }
 
     onLogMessage(QString("Signal trace: offset %1 Hz (RF %2 Hz)")
                      .arg(freqOffsetHz, 0, 'f', 1)
                      .arg(absFreqHz, 0, 'f', 0),
                  1);
+    updateMonitorChannel();
 }
 
 void MainWindow::onTraceWindowClosed()
@@ -851,6 +1062,10 @@ void MainWindow::onTraceWindowClosed()
     if (m_spectrumWidget) {
         m_spectrumWidget->clearTraceSelection();
     }
+    if (m_decodeWidget) {
+        m_decodeWidget->setSelectedSignal(false, 0.0f);
+    }
+    updateMonitorChannel();
 }
 
 void MainWindow::onTraceTuningChanged()
@@ -874,6 +1089,10 @@ void MainWindow::onTraceTuningChanged()
         /* Keep waterfall green marker aligned with fine-tuned offset */
         m_spectrumWidget->setTraceOffsetHz(m_traceWindow->targetOffsetHz());
     }
+    if (m_decodeWidget && m_traceWindow && m_traceWindow->isVisible() && m_traceWindow->hasTarget()) {
+        m_decodeWidget->setSelectedSignal(true, m_traceWindow->targetOffsetHz());
+    }
+    updateMonitorChannel();
 }
 
 void MainWindow::onTraceThresholdChanged(float thresholdDb)
@@ -896,6 +1115,9 @@ void MainWindow::onTraceSampleReady(float powerDb, bool aboveThreshold, qint64 s
      * Single-signal scope → bottom Morse Decoder panel only.
      * CW Decode multi-channel path is fed from spectrum columns, not here.
      */
+    if (m_morseBackend == MorseDecoderBackend::Spectrum) {
+        return;
+    }
     if (m_morseBackend == MorseDecoderBackend::Mask) {
         if (!m_maskWindow) {
             return;
@@ -910,21 +1132,72 @@ void MainWindow::onTraceSampleReady(float powerDb, bool aboveThreshold, qint64 s
     m_morseWindow->feedSample(powerDb, aboveThreshold, sampleTimeMs);
 }
 
+void MainWindow::syncSpectrumScroll(int numBins, float binWidth)
+{
+    if (!m_spectrumScroll || numBins <= 1 || binWidth <= 0.0f) {
+        return;
+    }
+    const int fullSpanHz = std::max(1, static_cast<int>(std::lround(numBins * binWidth)));
+    const int viewSpanHz = std::min(10000, fullSpanHz);
+    const int fullLowHz = -fullSpanHz / 2;
+    const int maxScroll = std::max(0, fullSpanHz - viewSpanHz);
+    const int maxLow = fullLowHz + maxScroll;
+    int viewLow = m_spectrumViewSet ? static_cast<int>(std::lround(m_spectrumViewLow))
+                                    : (-viewSpanHz / 2);
+    viewLow = std::max(fullLowHz, std::min(maxLow, viewLow));
+    m_spectrumViewSet = true;
+    m_spectrumScroll->setEnabled(maxScroll > 0);
+    m_spectrumScroll->blockSignals(true);
+    m_spectrumScroll->setRange(0, maxScroll);
+    m_spectrumScroll->setPageStep(std::max(1, viewSpanHz));
+    m_spectrumScroll->setSingleStep(std::max(1, viewSpanHz / 20));
+    m_spectrumScroll->setValue(maxLow - viewLow);
+    m_spectrumScroll->blockSignals(false);
+    applySpectrumView();
+}
+
+void MainWindow::applySpectrumView()
+{
+    if (!m_spectrumScroll || m_spectrumBins <= 1 || m_spectrumBinWidth <= 0.0f) {
+        return;
+    }
+    const int fullSpanHz = std::max(1, static_cast<int>(std::lround(
+                                            m_spectrumBins * m_spectrumBinWidth)));
+    const int viewSpanHz = std::min(10000, fullSpanHz);
+    const int fullLowHz = -fullSpanHz / 2;
+    const int maxScroll = std::max(0, fullSpanHz - viewSpanHz);
+    const int maxLow = fullLowHz + maxScroll;
+    const int viewLow = maxLow - m_spectrumScroll->value();
+    m_spectrumViewLow = static_cast<float>(viewLow);
+    if (m_spectrumWidget) {
+        m_spectrumWidget->setFrequencyView(m_spectrumViewLow, static_cast<float>(viewSpanHz));
+    }
+    if (m_decodeWidget) {
+        m_decodeWidget->setFrequencyView(m_spectrumViewLow, static_cast<float>(viewSpanHz));
+    }
+}
+
 void MainWindow::onToggleMorseBackend()
 {
     if (m_morseBackend == MorseDecoderBackend::Threshold) {
-        if (m_multiDecoder) {
-            m_multiDecoder->setBackend(MultiChannelDecoder::Backend::Mask);
-        }
         m_morseBackend = MorseDecoderBackend::Mask;
         onLogMessage(
-            "Morse backend → Mask (dit/dah boxes on Signal Trace scope, "
-            "width∝WPM, height thr→peak) — bottom panel + multi-channel CW Decode.",
+            "Morse backend → Mask (dit/dah boxes on Signal Trace scope).",
+            1);
+    } else if (m_morseBackend == MorseDecoderBackend::Mask) {
+        m_morseBackend = MorseDecoderBackend::Spectrum;
+        if (m_traceWindow) {
+            m_traceWindow->setMaskOverlay(false);
+        }
+        if (m_scopeWindow) {
+            m_scopeWindow->resetTiming();
+            m_scopeWindow->clearDecode();
+        }
+        onLogMessage(
+            "Morse backend → Spectrum (white trace on the waterfall, "
+            "copied 6 dahs behind the leading edge).",
             1);
     } else {
-        if (m_multiDecoder) {
-            m_multiDecoder->setBackend(MultiChannelDecoder::Backend::Threshold);
-        }
         m_morseBackend = MorseDecoderBackend::Threshold;
         if (m_traceWindow) {
             m_traceWindow->setMaskOverlay(false);
@@ -933,6 +1206,94 @@ void MainWindow::onToggleMorseBackend()
     }
     updateMorseBackendButton();
     showActiveMorsePanel();
+}
+
+QString MainWindow::trainingBrowseDirectory() const
+{
+    if (!m_trainingFile.isEmpty()) {
+        const QString dir = QFileInfo(m_trainingFile).absolutePath();
+        if (QDir(dir).exists()) {
+            return dir;
+        }
+    }
+
+    const QDir cwdTraining(QStringLiteral("training"));
+    if (cwdTraining.exists()) {
+        return cwdTraining.absolutePath();
+    }
+
+    QDir base(QCoreApplication::applicationDirPath());
+    if (base.dirName() == QStringLiteral("bin")) {
+        base.cdUp();
+    }
+    const QString besideApp = base.filePath(QStringLiteral("training"));
+    if (QDir(besideApp).exists()) {
+        return besideApp;
+    }
+    return QDir::currentPath();
+}
+
+void MainWindow::setTrainingFile(const QString &path)
+{
+    m_trainingFile = path;
+    if (!m_trainingFileButton || !m_playTrainingButton) {
+        return;
+    }
+    if (path.isEmpty()) {
+        m_trainingFileButton->setText(QStringLiteral("Training file…"));
+        m_trainingFileButton->setToolTip(
+            QStringLiteral("Choose a .tcistream training file. This does not start playback."));
+        m_playTrainingButton->setEnabled(false);
+        return;
+    }
+    const QFileInfo info(path);
+    m_trainingFileButton->setText(QStringLiteral("Training: %1").arg(info.fileName()));
+    m_trainingFileButton->setToolTip(info.absoluteFilePath());
+    m_playTrainingButton->setEnabled(true);
+}
+
+void MainWindow::onChooseTrainingFile()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this,
+        QStringLiteral("Choose training file"),
+        trainingBrowseDirectory(),
+        QStringLiteral("TCI training streams (*.tcistream);;All files (*)"));
+    if (path.isEmpty()) {
+        return;
+    }
+    setTrainingFile(path);
+    onLogMessage(QStringLiteral("Training file selected: %1").arg(path), 1);
+}
+
+void MainWindow::onStartPlaybackClicked()
+{
+    if (!m_worker) {
+        return;
+    }
+    if (m_trainingFile.isEmpty() || !QFileInfo::exists(m_trainingFile)) {
+        QMessageBox::information(this, QStringLiteral("Training"),
+                                 QStringLiteral("Choose a training file first."));
+        return;
+    }
+    if (m_worker->isDetectionActive()) {
+        QMessageBox::information(this, QStringLiteral("Training"),
+                                 QStringLiteral("Stop the detector before starting playback."));
+        return;
+    }
+
+    m_freezeDisplay = false;
+    m_trainingPlayback = true;
+    onLogMessage(QStringLiteral("Training playback: %1").arg(m_trainingFile), 1);
+    QMetaObject::invokeMethod(m_worker, "setConfig", Qt::QueuedConnection,
+                              Q_ARG(QString, QStringLiteral("training_file")),
+                              Q_ARG(QString, m_trainingFile));
+    QMetaObject::invokeMethod(m_worker, "setConfig", Qt::QueuedConnection,
+                              Q_ARG(QString, QStringLiteral("spectrum_span_hz")),
+                              Q_ARG(QString, QStringLiteral("0")));
+    m_spectrumModeLabel = QStringLiteral("WIDE");
+    updateStatusBar();
+    QMetaObject::invokeMethod(m_worker, "start", Qt::QueuedConnection);
 }
 
 void MainWindow::onPlayCapture()
@@ -1224,6 +1585,29 @@ void MainWindow::onAbout()
                        "Version 1.0");
 }
 
+void MainWindow::updateConnectionIndicator()
+{
+    const bool on = m_isRunning && m_isConnected;
+    const QString text = on ? QStringLiteral("●  Connected")
+                            : QStringLiteral("●  Not connected");
+    const QString style = on
+        ? QStringLiteral(
+              "QLabel { background-color: #1b5e20; color: #e8f5e9;"
+              " border-radius: 4px; padding: 3px 10px; font-weight: bold; }")
+        : QStringLiteral(
+              "QLabel { background-color: #4a1515; color: #ffcdd2;"
+              " border-radius: 4px; padding: 3px 10px; font-weight: bold; }");
+
+    if (m_connectLamp) {
+        m_connectLamp->setText(text);
+        m_connectLamp->setStyleSheet(style);
+    }
+    if (m_connectionLabel) {
+        m_connectionLabel->setText(text);
+        m_connectionLabel->setStyleSheet(style);
+    }
+}
+
 void MainWindow::updateStatusBar()
 {
     QString statusText = m_isRunning ? "Status: RUNNING" : "Status: STOPPED";
@@ -1239,8 +1623,7 @@ void MainWindow::updateStatusBar()
                       : QStringLiteral("  [Stream IQ]");
     m_statusLabel->setText(statusText);
 
-    QString connText = m_isConnected ? "Connected: YES" : "Connected: NO";
-    m_connectionLabel->setText(connText);
+    updateConnectionIndicator();
 
     m_bufferLabel->setText(QString("Buffer: %1").arg(m_bufferFill));
     m_cpuLabel->setText(QString("CPU: %1%").arg((int)m_cpuUsage));

@@ -11,7 +11,7 @@
 #include <limits.h>
 
 void config_defaults(config_t *config) {
-    strcpy(config->radio_host, "192.168.2.146");
+    strcpy(config->radio_host, "127.0.0.1");
     config->radio_port = 50001;
     strcpy(config->radio_protocol, "websocket");
     config->center_frequency = 14074000;
@@ -32,7 +32,8 @@ void config_defaults(config_t *config) {
     strcpy(config->deepcw_model_path, "models/model.onnx");
     config->spectrum_span_hz = 0;  /* 0 = full-band wide (production default) */
     strcpy(config->tci_stream_mode, "iq");  /* iq | audio */
-    config->multi_decode_channels = 1;
+    config->multi_decode_channels = 10;
+    config->training_file[0] = '\0';
 }
 
 static char *trim_string(char *str) {
@@ -201,6 +202,10 @@ int config_load(const char *path, config_t *config) {
             if (n < 1) n = 1;
             if (n > 16) n = 16;
             config->multi_decode_channels = n;
+        }
+        else if (strcmp(key, "training_file") == 0) {
+            strncpy(config->training_file, value, sizeof(config->training_file) - 1);
+            config->training_file[sizeof(config->training_file) - 1] = '\0';
         }
     }
     

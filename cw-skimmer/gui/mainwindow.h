@@ -12,18 +12,22 @@
 #include "detectorworker.h"
 
 class SpectrumWidget;
+class AudioMonitor;
 class DecodeWidget;
 class SettingsDialog;
 class SignalTraceWindow;
 class ThresholdMorseWindow;
 class MaskMorseWindow;
+class SpectrumMorseWindow;
 class MultiChannelDecoder;
 class QPushButton;
+class QScrollBar;
 class QStackedWidget;
 
 enum class MorseDecoderBackend {
     Threshold = 0,
-    Mask = 1
+    Mask = 1,
+    Spectrum = 2
 };
 
 enum class TciStreamMode {
@@ -70,6 +74,8 @@ private slots:
     void onRecordingStoppedForSave();
     void onRecordToggled(bool checked);
     void onRecordingActiveChanged(bool active);
+    void onChooseTrainingFile();
+    void onStartPlaybackClicked();
     void onPlayCapture();
     void onPlaybackStarted(const QString &path);
     void onPlaybackFinished();
@@ -84,6 +90,7 @@ private:
     void setupConnections();
     void initializeWorker();
     void updateStatusBar();
+    void updateConnectionIndicator();
     void stopDetection(const QString &reason);
     void ensureTraceWindow();
     void ensureMorsePanels();
@@ -91,20 +98,36 @@ private:
     void updateMorseBackendButton();
     void updateTciStreamButton();
     void applyTciStreamMode();
+    void setTrainingFile(const QString &path);
+    QString trainingBrowseDirectory() const;
+    void updateMonitorChannel();
     void reseedTraceFromWaterfall();
     void feedTraceFromColumns(const QVector<QVector<float>> &columns, float binWidth);
+    void syncSpectrumScroll(int numBins, float binWidth);
+    void applySpectrumView();
 
     // UI Widgets
     SpectrumWidget *m_spectrumWidget;
     DecodeWidget *m_decodeWidget;
+    QScrollBar *m_spectrumScroll;
+    int m_spectrumBins;
+    float m_spectrumBinWidth;
+    float m_spectrumViewLow;
+    bool m_spectrumViewSet;
     SignalTraceWindow *m_traceWindow;
     QStackedWidget *m_morseStack;
     ThresholdMorseWindow *m_morseWindow;
     MaskMorseWindow *m_maskWindow;
+    SpectrumMorseWindow *m_scopeWindow;
     MultiChannelDecoder *m_multiDecoder;
     QPushButton *m_morseBackendButton;
     QPushButton *m_tciStreamButton;
     QPushButton *m_recordButton;
+    QPushButton *m_trainingFileButton;
+    QPushButton *m_playTrainingButton;
+    QString m_trainingFile;
+    bool m_trainingPlayback;
+    AudioMonitor *m_audioMonitor;
     MorseDecoderBackend m_morseBackend;
     TciStreamMode m_tciStreamMode;
 
@@ -115,6 +138,7 @@ private:
     // Status bar widgets
     QLabel *m_statusLabel;
     QLabel *m_connectionLabel;
+    QLabel *m_connectLamp;
     QLabel *m_bufferLabel;
     QLabel *m_cpuLabel;
     QLabel *m_queueLabel;

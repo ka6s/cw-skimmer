@@ -669,13 +669,16 @@ SignalTraceWindow::SignalTraceWindow(QWidget *parent)
     , m_noisePeakDb(-200.0f)
     , m_markPeakHoldDb(-200.0f)
     , m_markBodyDb(-200.0f)
+    , m_gapThresholdDb(-200.0f)
     , m_trackInit(false)
     , m_sampleCount(0)
     , m_afcHoldCount(0)
     , m_keyPendingHigh(false)
     , m_keyEdgeStartMs(-1)
     , m_lastDetectTimeMs(-1)
-    , m_refWpm(20)
+    , m_columnClockMs(-1)
+    /* 35 WPM clamps the key hold to 18 ms, inside one ~21 ms column. */
+    , m_refWpm(35)
     , m_playbackTimer(nullptr)
     , m_playbackActive(false)
     , m_playbackInjecting(false)
@@ -757,8 +760,8 @@ SignalTraceWindow::SignalTraceWindow(QWidget *parent)
     m_autoThreshCheck = new QCheckBox("Auto thresh", this);
     m_autoThreshCheck->setChecked(true);
     m_autoThreshCheck->setToolTip(
-        "Continuously place the threshold between the tracked noise floor\n"
-        "and mark peaks, with hysteresis. Uncheck to set threshold by hand.");
+        "Place the red line in the gap between the noise and the CW marks,\n"
+        "above the grass and below the dit and dah tops. Uncheck to set it by hand.");
 
     /* AFC: peak-lock strongest tone near click (handles ±few hundred Hz mark error) */
     m_afcCheck = new QCheckBox("AFC peak-lock", this);
@@ -917,6 +920,7 @@ void SignalTraceWindow::setTarget(float freqOffsetHz, float absFreqHz, float bin
     m_keyPendingHigh = false;
     m_keyEdgeStartMs = -1;
     m_lastDetectTimeMs = -1;
+    m_columnClockMs = -1;
     m_trackLowDb = -95.0f;
     m_trackHighDb = -70.0f;
     m_noiseEmaDb = -95.0f;
@@ -924,6 +928,7 @@ void SignalTraceWindow::setTarget(float freqOffsetHz, float absFreqHz, float bin
     m_noisePeakDb = -200.0f;
     m_markPeakHoldDb = -200.0f;
     m_markBodyDb = -200.0f;
+    m_gapThresholdDb = -200.0f;
     m_powerHist.clear();
     m_sampleTimes.clear();
     if (m_plot) {
@@ -1043,8 +1048,25 @@ void SignalTraceWindow::appendSample(float powerDb, float noiseFloorDb, qint64 f
         m_plot->setNoiseFloor(noiseFloorDb);
     }
 
-    /* Playback must use capture-relative times so mark/space durations stay true */
-    const qint64 tMs = (forceTimeMs >= 0) ? forceTimeMs : m_clock.elapsed();
+    /*
+     * Live columns arrive in batches and would otherwise share one wall-clock
+     * stamp, which collapses a dit into a blip and prints T 5 I 6 H.
+     * Each column is one FFT hop: wideband period is 1/binWidth seconds.
+     * Narrow 3 kHz mode hops 32 decimated samples, about 10.7 ms.
+     */
+    qint64 tMs;
+    if (forceTimeMs >= 0) {
+        tMs = forceTimeMs;
+        const double periodMs = (m_binWidthHz > 20.0f) ? (1000.0 / m_binWidthHz) : 10.7;
+        m_columnClockMs = forceTimeMs + static_cast<qint64>(std::llround(periodMs));
+    } else {
+        const double periodMs = (m_binWidthHz > 20.0f) ? (1000.0 / m_binWidthHz) : 10.7;
+        if (m_columnClockMs < 0) {
+            m_columnClockMs = 0;
+        }
+        tMs = m_columnClockMs;
+        m_columnClockMs += static_cast<qint64>(std::llround(periodMs));
+    }
 
     m_plot->append(powerDb);
     m_sampleTimes.append(tMs);
@@ -1121,8 +1143,16 @@ void SignalTraceWindow::appendSample(float powerDb, float noiseFloorDb, qint64 f
         const qint64 confirmMs = static_cast<qint64>(
             std::lround(ditMs * (wantHigh ? 0.45 : 0.35)));
         const qint64 confirmClamped = std::max(qint64(18), std::min(qint64(80), confirmMs));
+        /* One wideband column is ~21 ms. A hold longer than that waits for
+         * the next column and drops a 30 WPM dit that occupied only this
+         * one. When the required hold fits in a column, this sample is
+         * the confirmation; a longer hold (slow ref) still waits. */
+        const bool columnConfirms = confirmClamped <= 21;
 
         if (wantHigh == m_keyIsHigh) {
+            m_keyEdgeStartMs = -1;
+        } else if (columnConfirms) {
+            m_keyIsHigh = wantHigh;
             m_keyEdgeStartMs = -1;
         } else {
             if (m_keyEdgeStartMs < 0 || wantHigh != m_keyPendingHigh) {
@@ -1150,6 +1180,8 @@ void SignalTraceWindow::appendSample(float powerDb, float noiseFloorDb, qint64 f
     if (newDetectSample) {
         emit sampleReady(detectPower, above, detectTimeMs);
     }
+    /* Speaker follows the point just drawn, not the delayed detect cursor. */
+    emit liveEnvelope(powerDb, m_thresholdDb);
     updateTitleAndLabels();
 }
 
@@ -1218,21 +1250,21 @@ void SignalTraceWindow::updateAdaptiveThreshold(float powerDb, float noiseFloorD
     }
 
     if (m_powerHist.size() < 16) {
-        float lo = m_powerHist.first();
-        float hi = m_powerHist.first();
-        for (float p : m_powerHist) {
-            lo = std::min(lo, p);
-            hi = std::max(hi, p);
-        }
-        if (hi - lo >= 5.0f) {
-            /*
-             * Seed low enough that first marks clear thr. 0.55·span sat inside
-             * the mark cloud (cwtrace_20260807_090453: thr~−59 vs peaks −55).
-             */
-            const float early = lo + 0.32f * (hi - lo);
-            m_thresholdDb = m_trackInit ? (0.80f * m_thresholdDb + 0.20f * early) : early;
-        }
-        m_trackLowDb = lo;
+        QVector<float> sorted = m_powerHist;
+        std::sort(sorted.begin(), sorted.end());
+        const float grass = sorted[sorted.size() / 2];
+        const float hi = sorted.last();
+        /*
+         * Median, not the deepest bin: a single quiet FFT column must not
+         * drag the line under the grass. Stay 8 dB above the noise until a
+         * mark is clearly up (15 dB), then seed in the gap. The old −70 dB
+         * start keyed the lead-in and ate the first letter.
+         */
+        const float early = (hi > grass + 15.0f)
+                                ? (grass + 0.45f * (hi - grass))
+                                : (grass + 8.0f);
+        m_thresholdDb = early;
+        m_trackLowDb = grass;
         m_trackHighDb = hi;
         m_trackInit = true;
         if (m_plot) {
@@ -1256,7 +1288,6 @@ void SignalTraceWindow::updateAdaptiveThreshold(float powerDb, float noiseFloorD
 
     const float p10 = percentile(10.0f);
     const float p20 = percentile(20.0f);
-    const float p40 = percentile(40.0f);
     const float p50 = percentile(50.0f);
     const float spaceDb = 0.5f * (p10 + p20);
 
@@ -1265,11 +1296,15 @@ void SignalTraceWindow::updateAdaptiveThreshold(float powerDb, float noiseFloorD
      * Average of lower cluster = "grass" baseline for the 85/15 thr placement.
      */
     {
+        /* Grass only: samples near the space level. Anything below p40
+         * includes the first dah, and that peak used to latch for the
+         * whole pass (0.002 dB/column) and pin the line on the crests. */
+        const float grassCut = spaceDb + 6.0f;
         float sumLo = 0.0f;
         int nLo = 0;
         float localNoisePeak = -200.0f;
         for (float p : m_powerHist) {
-            if (p <= p40 + 1.0f) {
+            if (p <= grassCut) {
                 sumLo += p;
                 nLo++;
                 localNoisePeak = std::max(localNoisePeak, p);
@@ -1284,12 +1319,12 @@ void SignalTraceWindow::updateAdaptiveThreshold(float powerDb, float noiseFloorD
             }
         }
         if (localNoisePeak > -180.0f) {
-            if (m_noisePeakDb < -180.0f) {
+            if (m_noisePeakDb < -180.0f || m_noisePeakDb > localNoisePeak + 8.0f) {
                 m_noisePeakDb = localNoisePeak;
             } else if (localNoisePeak >= m_noisePeakDb) {
                 m_noisePeakDb = 0.85f * m_noisePeakDb + 0.15f * localNoisePeak;
             } else {
-                m_noisePeakDb -= 0.002f;
+                m_noisePeakDb -= 0.05f;
                 m_noisePeakDb = std::max(m_noisePeakDb, localNoisePeak);
             }
         }
@@ -1303,7 +1338,10 @@ void SignalTraceWindow::updateAdaptiveThreshold(float powerDb, float noiseFloorD
      * Mark absolute PEAK (drawn) + body (typical dit/dah tops for thr).
      * Gate marks above noise so grass does not inflate "peak".
      */
-    const float markGate = noiseRef + 5.0f;
+    /* 12 dB, not 5: grass spikes sit a few dB above the average and were
+     * being treated as a mark cluster, which dropped the line into the noise
+     * at the end of a transmission and tacked a dit onto the last letter. */
+    const float markGate = noiseRef + 12.0f;
     const bool isMark = powerDb >= markGate;
 
     if (isMark) {
@@ -1330,10 +1368,8 @@ void SignalTraceWindow::updateAdaptiveThreshold(float powerDb, float noiseFloorD
      * bulk of dits/dahs, not only rare tall spikes (164845: thr sat at −53
      * while most marks were −58…−65).
      */
-    float markP25 = -200.0f;
     float markP50 = -200.0f;
     float markP70 = -200.0f;
-    float markP85 = -200.0f;
     {
         QVector<float> highs;
         highs.reserve(n / 3);
@@ -1351,17 +1387,15 @@ void SignalTraceWindow::updateAdaptiveThreshold(float powerDb, float noiseFloorD
                 const float f = idx - static_cast<float>(i0);
                 return highs[i0] * (1.0f - f) + highs[i1] * f;
             };
-            markP25 = atPct(25.0f);
             markP50 = atPct(50.0f);
             markP70 = atPct(70.0f);
-            markP85 = atPct(85.0f);
             if (m_markPeakHoldDb < -180.0f) {
                 m_markPeakHoldDb = highs.last();
             } else {
                 m_markPeakHoldDb = std::max(m_markPeakHoldDb, highs.last());
             }
         } else if (!highs.isEmpty()) {
-            markP25 = markP50 = markP70 = markP85 = highs.last();
+            markP50 = markP70 = highs.last();
             m_markPeakHoldDb = std::max(m_markPeakHoldDb, highs.last());
         }
     }
@@ -1391,88 +1425,45 @@ void SignalTraceWindow::updateAdaptiveThreshold(float powerDb, float noiseFloorD
     }
 
     /*
-     * Bit-top for thr placement = typical mark crests (body), NOT absolute max.
-     * Absolute PEAK is drawn separately so thr stays low enough to intersect.
+     * Mark level for the gap is the body of the dits and dahs (median of
+     * samples above the grass), not the absolute crest. On a clean tone the
+     * crest, p25, and median sit within a few dB of each other, so a line
+     * "1.5 dB under p25" is on top of the waveform.
      */
-    const float bitTop = m_markBodyDb;
+    const float markLevel = (markP50 > -180.0f) ? markP50
+                           : (markP70 > -180.0f) ? markP70
+                           : m_markBodyDb;
 
     m_trackLowDb = noiseRef;
-    m_trackHighDb = (m_markPeakHoldDb > -180.0f) ? m_markPeakHoldDb : bitTop;
+    m_trackHighDb = (m_markPeakHoldDb > -180.0f) ? m_markPeakHoldDb : markLevel;
     m_trackInit = true;
 
     /*
-     * Auto thr ~28% of the way from noise to mark crests:
-     *   noise (avg) ........ 0%
-     *   THRESH ............. ~28% of (avgPeak − noise)
-     *   PEAK (top of bits) . 100%
-     * Must stay BELOW most mark samples (use mark p25), not at mark median —
-     * cwtrace_20260807_090453 sat thr at ~−59 inside marks (−55…−52) → T/E spam.
+     * Place the line in the open gap, about halfway from the grass up to
+     * the mark body, at least 6 dB above the noise and 6 dB under the marks.
      */
-    float avgPeak = bitTop;
-    if (m_markPeakHoldDb > -180.0f) {
-        avgPeak = 0.6f * bitTop + 0.4f * m_markPeakHoldDb;
+    float ideal;
+    if (markLevel > noiseRef + 12.0f) {
+        ideal = noiseRef + 0.45f * (markLevel - noiseRef);
+        ideal = std::max(ideal, noiseRef + 6.0f);
+        ideal = std::min(ideal, markLevel - 6.0f);
+        /* Remember a real gap so key-up does not drop the line into the grass. */
+        m_gapThresholdDb = ideal;
+    } else if (m_gapThresholdDb > -180.0f) {
+        ideal = m_gapThresholdDb;
+    } else {
+        ideal = noiseRef + 8.0f;
     }
-    if (markP70 > -180.0f) {
-        avgPeak = 0.5f * avgPeak + 0.5f * markP70;
+    /* Wideband noise prior. Ignore a grass-peak hold that is still up in the marks. */
+    if (m_noisePeakDb > -180.0f && m_noisePeakDb < noiseRef + 8.0f) {
+        ideal = std::max(ideal, m_noisePeakDb + 2.0f);
     }
-
-    const float span = std::max(3.0f, avgPeak - noiseRef);
-    float ideal = noiseRef + 0.28f * span;
-
-    /* Soft bounds: above grass, well below mark body / absolute peak */
-    ideal = std::max(ideal, noiseRef + 3.0f);
-    if (m_noisePeakDb > -180.0f) {
-        ideal = std::max(ideal, m_noisePeakDb + 1.5f);
+    if (m_noiseEmaDb > -180.0f) {
+        ideal = std::max(ideal, m_noiseEmaDb + 4.0f);
     }
-    ideal = std::max(ideal, m_noiseEmaDb + 3.5f);
-    if (m_markPeakHoldDb > -180.0f) {
-        ideal = std::min(ideal, m_markPeakHoldDb - 5.0f);
+    if (markLevel > noiseRef + 12.0f) {
+        ideal = std::min(ideal, markLevel - 6.0f);
     }
-    /*
-     * Cap under the lower quartile of mark energy so dits/dahs fully clear thr
-     * (was markP50−1 dB → thr inside the mark cloud → only peaks keyed → T/E).
-     */
-    if (markP25 > -180.0f) {
-        ideal = std::min(ideal, markP25 - 2.0f);
-    } else if (markP50 > -180.0f) {
-        ideal = std::min(ideal, markP50 - 4.0f);
-    }
-    if (bitTop > -180.0f) {
-        ideal = std::min(ideal, bitTop - 4.0f);
-    }
-    ideal = std::min(ideal, avgPeak - 4.0f);
-
-    /* Duty too high → thr in noise: nudge up, but never into mark median */
-    int nAbove = 0;
-    int nMarkAbove = 0;
-    int nMark = 0;
-    for (float p : m_powerHist) {
-        if (p >= m_thresholdDb) {
-            nAbove++;
-        }
-        if (p >= markGate) {
-            nMark++;
-            if (p >= m_thresholdDb) {
-                nMarkAbove++;
-            }
-        }
-    }
-    const float highFrac = static_cast<float>(nAbove) / static_cast<float>(n);
-    if (highFrac > 0.62f && markP25 > -180.0f) {
-        ideal = std::min(markP25 - 1.5f, ideal + 1.0f);
-    }
-    /*
-     * Marks present but thr only catches a minority of mark samples → thr too
-     * high (chops elements into T/E). Pull ideal down under mark p25.
-     */
-    if (nMark >= 6) {
-        const float markClear = static_cast<float>(nMarkAbove)
-                                / static_cast<float>(nMark);
-        if (markClear < 0.55f && markP25 > -180.0f) {
-            ideal = std::min(ideal, markP25 - 3.0f);
-        }
-    }
-
     ideal = std::min(40.0f, std::max(-130.0f, ideal));
 
     const float err = ideal - m_thresholdDb;
@@ -1481,20 +1472,16 @@ void SignalTraceWindow::updateAdaptiveThreshold(float powerDb, float noiseFloorD
     } else if (err > 0.0f) {
         m_thresholdDb = 0.90f * m_thresholdDb + 0.10f * ideal;
     } else if (err < -2.0f) {
-        /* Drop promptly when thr is glued into mark tops */
+        /* Drop promptly when the line is glued to the crests. */
         m_thresholdDb = 0.55f * m_thresholdDb + 0.45f * ideal;
     } else {
         m_thresholdDb = 0.92f * m_thresholdDb + 0.08f * ideal;
     }
 
-    m_thresholdDb = std::max(m_thresholdDb, noiseRef + 2.5f);
-    if (m_markPeakHoldDb > -180.0f) {
-        m_thresholdDb = std::min(m_thresholdDb, m_markPeakHoldDb - 4.0f);
+    m_thresholdDb = std::max(m_thresholdDb, noiseRef + 4.0f);
+    if (markLevel > noiseRef + 12.0f) {
+        m_thresholdDb = std::min(m_thresholdDb, markLevel - 6.0f);
     }
-    if (markP25 > -180.0f) {
-        m_thresholdDb = std::min(m_thresholdDb, markP25 - 1.5f);
-    }
-    m_thresholdDb = std::min(m_thresholdDb, avgPeak - 3.5f);
     m_thresholdDb = std::min(40.0f, std::max(-130.0f, m_thresholdDb));
 
     if (m_plot) {
@@ -2234,6 +2221,7 @@ bool SignalTraceWindow::startPlayback(const QString &path)
     m_keyPendingHigh = false;
     m_keyEdgeStartMs = -1;
     m_lastDetectTimeMs = -1;
+    m_columnClockMs = -1;
     m_trackInit = false;
     m_peakPowerDb = -200.0f;
     m_minPowerDb = 0.0f;
@@ -2242,6 +2230,7 @@ bool SignalTraceWindow::startPlayback(const QString &path)
     m_noisePeakDb = -200.0f;
     m_markPeakHoldDb = -200.0f;
     m_markBodyDb = -200.0f;
+    m_gapThresholdDb = -200.0f;
     if (m_plot) {
         m_plot->setMarkPeakDb(-200.0f);
     }

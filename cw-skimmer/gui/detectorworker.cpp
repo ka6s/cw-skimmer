@@ -265,6 +265,16 @@ void DetectorWorker::stop()
     fflush(stderr);
 }
 
+QString DetectorWorker::configValue(const QString &key) const
+{
+    if (!m_detector) {
+        return QString();
+    }
+    const QByteArray k = key.toUtf8();
+    const char *value = cwskimmer_config_get(m_detector, k.constData());
+    return value ? QString::fromUtf8(value) : QString();
+}
+
 void DetectorWorker::setConfig(const QString &key, const QString &value)
 {
     if (QThread::currentThread() != thread() && thread() && thread()->isRunning()) {
@@ -411,6 +421,24 @@ void DetectorWorker::onSpectrumUpdated(const cwskimmer_spectrum_t *spectrum)
 
     if (shouldFlush) {
         flushPendingSpectrum();
+    }
+}
+
+void DetectorWorker::monitorCallbackStatic(const int16_t *pcm, int sample_count, void *userdata)
+{
+    DetectorWorker *self = static_cast<DetectorWorker *>(userdata);
+    if (!self || !self->m_acceptCallbacks.load() || !pcm || sample_count <= 0) {
+        return;
+    }
+    QByteArray bytes(reinterpret_cast<const char *>(pcm),
+                     sample_count * (int)sizeof(int16_t));
+    emit self->monitorPcmReady(bytes);
+}
+
+void DetectorWorker::setMonitorTone(float offsetHz, bool enabled)
+{
+    if (m_detector) {
+        cwskimmer_set_monitor_tone(m_detector, offsetHz, enabled ? 1 : 0);
     }
 }
 

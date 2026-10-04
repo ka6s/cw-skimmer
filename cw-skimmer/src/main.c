@@ -48,8 +48,28 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     
-    // Connect to radio
-    if (tci_client_connect(radio) < 0) {
+    if (config.training_file[0]) {
+        if (tci_client_open_training(radio, config.training_file) < 0) {
+            LOG_ERROR("Failed to open training file %s", config.training_file);
+            tci_client_destroy(radio);
+            return 1;
+        }
+        printf("Training file %s: %d signals\n",
+               config.training_file, tci_training_transcript_count());
+        for (int i = 0; i < tci_training_transcript_count(); ++i) {
+            float offset = 0.0f;
+            float atten = 0.0f;
+            float fade = 0.0f;
+            float start_s = 0.0f;
+            int wpm = 0;
+            char text[128];
+            if (tci_training_transcript(i, &offset, &atten, &fade, &wpm,
+                                        &start_s, text, (int)sizeof(text)) == 0) {
+                printf("  %d  %+.1f Hz  atten %.1f dB  fade %.1f dB  %d WPM  t=%.3fs  %s\n",
+                       i + 1, offset, atten, fade, wpm, start_s, text);
+            }
+        }
+    } else if (tci_client_connect(radio) < 0) {
         LOG_ERROR("Failed to connect to radio");
         tci_client_destroy(radio);
         return 1;
@@ -121,8 +141,21 @@ int main(int argc, char *argv[]) {
             
             // When buffer has enough samples, process them
             int available = tci_buffer_available(radio);
-            if (available >= 1024) {
+            int min_need = 1024;
+            if (tci_training_at_eof() && available > 0 && available < 1024) {
+                min_need = 1;
+            }
+            if (available >= min_need) {
                 int to_process = (available / 1024) * 1024;
+                if (to_process > config.sample_rate) {
+                    to_process = (config.sample_rate / 1024) * 1024;
+                }
+                if (tci_training_at_eof()) {
+                    to_process = available;
+                    if (to_process > config.sample_rate) {
+                        to_process = config.sample_rate;
+                    }
+                }
                 int got = tci_get_iq_samples(radio, iq_buffer, to_process);
                 
                 if (got > 0) {
@@ -194,6 +227,11 @@ int main(int argc, char *argv[]) {
                       read_count, samples_processed, available);
         }
         
+        if (tci_training_finished(radio)) {
+            LOG_INFO("Training file consumed");
+            break;
+        }
+
         usleep(10000);  // Sleep 10ms between reads
     }
     

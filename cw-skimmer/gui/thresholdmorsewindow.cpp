@@ -10,6 +10,7 @@
  */
 
 #include "thresholdmorsewindow.h"
+#include "cwcopyformat.h"
 
 #include <QCheckBox>
 #include <QHBoxLayout>
@@ -17,8 +18,8 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSlider>
-#include <QTextCursor>
 #include <QVBoxLayout>
+
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -61,6 +62,24 @@ double medianOf(QVector<double> v)
         return v[n / 2];
     }
     return 0.5 * (v[n / 2 - 1] + v[n / 2]);
+}
+
+/* Median of the short cluster so a letter gap filed as an element gap
+ * does not pull the dit estimate up to 3 dits. */
+double shortGapMedian(const QVector<double> &gaps)
+{
+    if (gaps.isEmpty()) {
+        return 0.0;
+    }
+    QVector<double> sorted = gaps;
+    std::sort(sorted.begin(), sorted.end());
+    QVector<double> low;
+    for (double g : sorted) {
+        if (g <= sorted.first() * 1.80 + 0.004) {
+            low.append(g);
+        }
+    }
+    return low.isEmpty() ? 0.0 : medianOf(low);
 }
 
 }  // namespace
@@ -157,8 +176,9 @@ ThresholdMorseWindow::ThresholdMorseWindow(QWidget *parent, bool headless)
         "Squelched until strong CW keying is heard.\n"
         "Long runs of T or E usually mean wrong WPM or noise.");
     m_textView->setStyleSheet(
-        "QPlainTextEdit { background: #0a0a0c; color: #00ff66; font-family: Courier; "
+        "QPlainTextEdit { background: #0a0a0c; color: #dcdcdc; font-family: Courier; "
         "font-size: 18px; }");
+    installCwCopyHighlighter(m_textView);
 
     m_clearButton = new QPushButton("Clear Text", this);
     m_resetTimingButton = new QPushButton("Reset Timing", this);
@@ -389,10 +409,11 @@ void ThresholdMorseWindow::updateSquelch(float powerDb, bool above, qint64 nowMs
     }
 
     if (!m_squelchOpen) {
-        /* Open quickly: one solid mark, or modest energy + peak */
-        if ((m_markEnergySec >= 0.12 && m_peakAboveThreshDb >= 2.5f)
-            || (m_markCount >= 1 && m_peakAboveThreshDb >= 3.0f)
-            || (above && strengthDb >= 4.0f && m_markCount >= 1)) {
+        /* Open on the first strong mark itself. Waiting for a second mark
+         * threw away the leading dit (S→I, A→T, P→G) before the gate opened. */
+        if ((above && strengthDb >= 6.0f)
+            || (m_markEnergySec >= 0.08 && m_peakAboveThreshDb >= 3.0f)
+            || (m_markCount >= 1 && m_peakAboveThreshDb >= 3.0f)) {
             m_squelchOpen = true;
         }
     } else if (m_lastStrongMarkMs > 0 && (nowMs - m_lastStrongMarkMs) > 8000) {
@@ -400,6 +421,7 @@ void ThresholdMorseWindow::updateSquelch(float powerDb, bool above, qint64 nowMs
         m_squelchOpen = false;
         m_pendingMarkDurs.clear();
         m_pendingMarkPeaks.clear();
+        m_pendingGaps.clear();
         m_havePendingMark = false;
         m_pendingMarkSec = 0.0;
         m_pendingMarkPeakDb = -200.0f;
@@ -471,9 +493,10 @@ void ThresholdMorseWindow::commitPendingMarkToLetter()
      * 50 ms floor and 0.28×unit dropped the lone E in KENWOO (38 ms).
      * Keep a low absolute floor; scale gently with unit once calibrated.
      */
+    /* One spectrum column is ~21 ms. A 30 WPM dit often is that one column. */
     const double minMark = m_unitCalibrated
-                               ? std::max(0.025, m_unitSeconds * 0.20)
-                               : 0.028;
+                               ? std::max(0.015, m_unitSeconds * 0.20)
+                               : 0.015;
     if (markSec < minMark) {
         return;
     }
@@ -530,9 +553,15 @@ void ThresholdMorseWindow::handleSpaceEnd(double seconds)
      * 0.40×unit (~28 ms at 15 WPM) was ok; keep ≤0.35× and ≤45 ms so a short
      * E is not glued to a following dah across a real space (or vice versa).
      */
+    /*
+     * Merge only dropouts inside a mark. A 30 WPM element gap is 40 ms and
+     * lands on a single ~21 ms spectrum column, so an unlocked 40 ms hole
+     * glued those dahs together (P → R). Keep the unlocked hole under one
+     * column; once the dit is known, scale it and cap at 45 ms.
+     */
     const double holeMax = m_unitCalibrated
-                               ? std::min(0.045, std::max(0.020, m_unitSeconds * 0.32))
-                               : 0.040;
+                               ? std::min(0.045, std::max(0.012, m_unitSeconds * 0.28))
+                               : 0.015;
 
     if (seconds < holeMax && m_havePendingMark) {
         m_pendingMarkSec += seconds;
@@ -545,6 +574,7 @@ void ThresholdMorseWindow::handleSpaceEnd(double seconds)
     if (!m_squelchOpen) {
         m_pendingMarkDurs.clear();
         m_pendingMarkPeaks.clear();
+        m_pendingGaps.clear();
         return;
     }
 
@@ -576,12 +606,32 @@ void ThresholdMorseWindow::handleSpaceEnd(double seconds)
      * after the first two dahs as "M" instead of "Q" (--.-).
      */
     /* Floor unit so glitch-sized dits cannot turn every real gap into a letter (T/E spam). */
-    const double unit = std::max(0.050, m_unitSeconds);
-    const double elemMax = m_unitCalibrated ? (unit * 2.20) : 0.80;
-    if (seconds < elemMax) {
-        /* Intra-letter gap ≈ 1 dit — feed Auto WPM and re-estimate promptly */
-        noteElementGap(seconds);
+    /*
+     * Element gap is 1 dit, letter gap is 3 dits. 2.2× sits between them
+     * once the unit is the real dit. Before that, a 12 WPM seed makes a
+     * 30 WPM letter gap (3×40 ms) look like an element gap and glues T+H
+     * into 6. Hold the gap and split with the unit we have at flush.
+     */
+    const double unit = std::max(0.040, m_unitSeconds);
+    const double elemMax = unit * 2.20;
+    if (seconds < elemMax || !m_unitCalibrated) {
+        if (seconds < elemMax) {
+            noteElementGap(seconds);
+        } else {
+            noteLetterGap(seconds);
+        }
+        if (!m_pendingMarkDurs.isEmpty()) {
+            m_pendingGaps.append(seconds);
+        }
         recomputeUnitFromMarks();
+        /*
+         * The gap that just ended may have been an element gap at the seed
+         * unit and a letter gap once a dit/dah split exists. Release every
+         * letter whose following gap is now a boundary; keep an open tail.
+         */
+        if (releaseClosedLetters()) {
+            m_letterEmittedForSpace = true;
+        }
         return;
     }
 
@@ -637,11 +687,17 @@ void ThresholdMorseWindow::checkLetterTimeout(qint64 nowMs)
     recomputeUnitFromMarks();
     flushPendingLetter();
     m_letterEmittedForSpace = true;
-    const double wordMin = wordMinSeconds();
-    if (hold >= wordMin && !m_scrollText.isEmpty() && !m_scrollText.endsWith(QChar(' '))) {
+    /*
+     * The key is still up. `hold` is only the time so far, not the gap,
+     * so recording it as a letter gap pulls the word threshold down and a
+     * slightly long letter gap (one spectrum column) becomes a word space.
+     * Classify the finished gap in handleSpaceEnd. A key-up that has already
+     * reached the word threshold is a word; the closing edge will not add
+     * a second space.
+     */
+    if (hold >= wordMinSeconds() && !m_scrollText.isEmpty()
+        && !m_scrollText.endsWith(QChar(' '))) {
         appendChar(QChar(' '));
-    } else if (hold < wordMin) {
-        noteLetterGap(hold);
     }
 }
 
@@ -706,7 +762,153 @@ void ThresholdMorseWindow::flushPendingLetter()
     /*
      * Dit/dah boundary: 2.0×unit is standard. Slightly soft 1.9× helps A (.-)
      * when the dah is a bit short (OA capture second element of A).
+     * Letter splits also use the short gaps inside this run, so a letter
+     * gap still separates T from H when the unit has not caught a fast fist.
      */
+    QVector<double> gaps = m_pendingGaps;
+    m_pendingGaps.clear();
+    const double splitAt = splitGapSeconds(gaps);
+    const double wordCut = wordCutForGaps(gaps);
+    int groupStart = 0;
+    for (int gi = 0; gi < durs.size(); ++gi) {
+        const bool boundary = (gi == durs.size() - 1) || (gi < gaps.size() && gaps[gi] >= splitAt);
+        if (!boundary) {
+            continue;
+        }
+        QVector<double> group;
+        QVector<float> groupPeaks;
+        for (int j = groupStart; j <= gi; ++j) {
+            group.append(durs[j]);
+            groupPeaks.append(peaks[j]);
+        }
+        emitOneLetter(group, groupPeaks);
+        if (gi < gaps.size()) {
+            if (gaps[gi] >= wordCut) {
+                appendChar(QChar(' '));
+            } else if (gaps[gi] >= splitAt) {
+                noteLetterGap(gaps[gi]);
+            }
+        }
+        groupStart = gi + 1;
+    }
+    return;
+}
+
+double ThresholdMorseWindow::splitGapSeconds(const QVector<double> &gaps) const
+{
+    /* Seed 12 WPM must not turn a 30 WPM letter gap into an element gap,
+     * nor a 5 WPM element gap into a letter gap. Until the unit is known,
+     * split only when the gaps themselves form two clusters. */
+    double splitAt = m_unitCalibrated ? std::max(0.040, m_unitSeconds) * 2.20 : 9.0;
+    if (gaps.size() >= 2) {
+        double shortest = gaps[0];
+        for (double g : gaps) {
+            shortest = std::min(shortest, g);
+        }
+        QVector<double> low;
+        for (double g : gaps) {
+            if (g <= shortest * 1.60 + 0.001) {
+                low.append(g);
+            }
+        }
+        if (low.size() >= 2 && shortest >= 0.016) {
+            splitAt = std::min(splitAt, medianOf(low) * 2.60);
+        }
+    }
+    return splitAt;
+}
+
+double ThresholdMorseWindow::wordCutForGaps(const QVector<double> &gaps) const
+{
+    double wordCut = wordMinSeconds();
+    if (gaps.size() < 2) {
+        return wordCut;
+    }
+    double shortest = gaps[0];
+    for (double g : gaps) {
+        shortest = std::min(shortest, g);
+    }
+    QVector<double> low;
+    for (double g : gaps) {
+        if (g <= shortest * 1.60 + 0.001) {
+            low.append(g);
+        }
+    }
+    if (low.size() >= 2 && shortest >= 0.016) {
+        /* ITU word gap is 7 dits; 6× clears a 3-dit letter gap.
+         * Ignore a short cluster that is far below the dit — one-column
+         * aliases were turning letter gaps into word spaces. */
+        const double ref = medianOf(low);
+        const bool refOk = !m_unitCalibrated
+                           || (ref >= m_unitSeconds * 0.55 && ref <= m_unitSeconds * 1.80);
+        if (refOk) {
+            wordCut = std::min(wordCut, ref * 6.0);
+        }
+    }
+    return wordCut;
+}
+
+bool ThresholdMorseWindow::releaseClosedLetters()
+{
+    if (m_pendingMarkDurs.isEmpty() || m_pendingGaps.size() < m_pendingMarkDurs.size()) {
+        return false;
+    }
+    const double splitAt = splitGapSeconds(m_pendingGaps);
+    int lastClosed = -1;
+    const int n = m_pendingMarkDurs.size();
+    for (int i = 0; i < n && i < m_pendingGaps.size(); ++i) {
+        if (m_pendingGaps[i] >= splitAt) {
+            lastClosed = i;
+        }
+    }
+    if (lastClosed < 0) {
+        return false;
+    }
+
+    QVector<double> durs = m_pendingMarkDurs.mid(0, lastClosed + 1);
+    QVector<float> peaks = m_pendingMarkPeaks.mid(0, lastClosed + 1);
+    QVector<double> gaps = m_pendingGaps.mid(0, lastClosed + 1);
+    while (peaks.size() < durs.size()) {
+        peaks.append(-200.0f);
+    }
+    m_pendingMarkDurs = m_pendingMarkDurs.mid(lastClosed + 1);
+    m_pendingMarkPeaks = m_pendingMarkPeaks.mid(lastClosed + 1);
+    m_pendingGaps = m_pendingGaps.mid(lastClosed + 1);
+
+    const double wordCut = wordCutForGaps(gaps);
+    int groupStart = 0;
+    for (int gi = 0; gi < durs.size(); ++gi) {
+        const bool boundary = (gi == durs.size() - 1)
+                              || (gi < gaps.size() && gaps[gi] >= splitAt);
+        if (!boundary) {
+            continue;
+        }
+        QVector<double> group;
+        QVector<float> groupPeaks;
+        for (int j = groupStart; j <= gi; ++j) {
+            group.append(durs[j]);
+            groupPeaks.append(peaks[j]);
+        }
+        emitOneLetter(group, groupPeaks);
+        if (gi < gaps.size()) {
+            if (gaps[gi] >= wordCut) {
+                appendChar(QChar(' '));
+            } else {
+                noteLetterGap(gaps[gi]);
+            }
+        }
+        groupStart = gi + 1;
+    }
+    return m_pendingMarkDurs.isEmpty();
+}
+
+void ThresholdMorseWindow::emitOneLetter(const QVector<double> &dursIn, const QVector<float> &peaksIn)
+{
+    QVector<double> durs = dursIn;
+    QVector<float> peaks = peaksIn;
+    if (durs.isEmpty()) {
+        return;
+    }
     const double dahMin = m_unitSeconds * 1.90;
     QString pattern;
     for (double d : durs) {
@@ -726,8 +928,8 @@ void ThresholdMorseWindow::flushPendingLetter()
 
     if (durs.size() == 1) {
         const double d = durs[0];
-        const double minE = m_unitCalibrated ? std::max(0.025, m_unitSeconds * 0.28)
-                                            : 0.025;
+        const double minE = m_unitCalibrated ? std::max(0.015, m_unitSeconds * 0.28)
+                                            : 0.015;
         /* T must look like a dah: ≥1.1× unit (was 1.2 — still ok for short T) */
         const double minT = m_unitCalibrated ? std::max(0.10, m_unitSeconds * 1.05)
                                             : 0.12;
@@ -852,8 +1054,9 @@ void ThresholdMorseWindow::noteLetterGap(double gapSeconds)
 
 void ThresholdMorseWindow::noteElementGap(double gapSeconds)
 {
-    /* Element spacing ≈ 1 dit: 30 WPM ≈ 40 ms … 2 WPM ≈ 0.6 s (cap 1.5 s) */
-    if (gapSeconds < 0.028 || gapSeconds > 1.50) {
+    /* One spectrum column is ~21 ms. A 30 WPM element gap often is that
+     * single column, so the old 28 ms floor threw the dit estimate away. */
+    if (gapSeconds < 0.016 || gapSeconds > 1.50) {
         return;
     }
     m_elementGaps.append(gapSeconds);
@@ -928,7 +1131,8 @@ void ThresholdMorseWindow::maybeInsertProtocolSpace(QChar nextChar)
 
 void ThresholdMorseWindow::recomputeUnitFromMarks()
 {
-    if (!m_autoWpmCheck || !m_autoWpmCheck->isChecked()) {
+    /* Headless multi-channel has no checkbox: Auto WPM stays on. */
+    if (m_autoWpmCheck && !m_autoWpmCheck->isChecked()) {
         m_unitSeconds = m_sliderUnitSeconds;
         m_unitCalibrated = true;
         return;
@@ -1001,18 +1205,20 @@ void ThresholdMorseWindow::recomputeUnitFromMarks()
     }
 
     /*
-     * Early provisional unit (before full bimodal lock):
-     *  - 1+ long marks → unit ≈ longest/3 (treat as dah)
-     *  - element gaps ≈ 1 dit (strong, once we have a few)
-     * This avoids classifying the first letter at the seed 12 WPM unit.
+     * One mark cannot tell a dit from a dah: a 5 WPM dit (240 ms) is longer
+     * than the 12 WPM seed, and a 24 WPM dah (150 ms) is shorter than 2.2×
+     * that seed. Lock the unit from a dit/dah split, or from element gaps
+     * that are clearly ~1/3 of a uniform mark (dahs). Gap ≈ mark is ambiguous
+     * (dits with element gaps, or a dah followed by a letter gap).
      */
     double fromGaps = 0.0;
     if (m_elementGaps.size() >= 2) {
-        fromGaps = medianOf(m_elementGaps);
-        if (fromGaps < 0.028 || fromGaps > 1.20) {
+        fromGaps = shortGapMedian(m_elementGaps);
+        if (fromGaps < 0.016 || fromGaps > 1.20) {
             fromGaps = 0.0;
         }
     }
+    const double gapMed = shortGapMedian(m_elementGaps);
 
     double fromMarks = 0.0;
     double bestRatio = 0.0;
@@ -1090,12 +1296,21 @@ void ThresholdMorseWindow::recomputeUnitFromMarks()
             if (!dits.isEmpty()) {
                 std::sort(dits.begin(), dits.end());
                 /*
-                 * Dahs-only trap: if the “low” cluster median is still ≥150 ms
-                 * and we never found a real dit cluster, marks are all dahs
-                 * (common when thr is high and short dits were lost).
+                 * Uniform marks ≥150 ms are not automatically dahs. A 5–8 WPM
+                 * dit is that long, and its element gap matches the mark, so
+                 * S became O. Divide by 3 only when the gaps are ~1/3 of the
+                 * mark (real dahs, or dits lost under the threshold).
                  */
-                if (dahs.isEmpty() && medianOf(dits) >= 0.150 && medianOf(dits) <= 0.90) {
-                    fromMarks = medianOf(dits) / 3.0;
+                const double medMarks = medianOf(dits);
+                const bool provedDahs = dahs.isEmpty() && gapMed >= 0.020
+                                        && gapMed < medMarks * 0.50 && medMarks >= 0.080;
+                const bool lockedDahs = dahs.isEmpty() && m_unitCalibrated
+                                        && medMarks >= std::max(0.080, m_unitSeconds * 2.2)
+                                        && gapMed >= 0.020 && gapMed < medMarks * 0.50;
+                if (provedDahs || lockedDahs) {
+                    fromMarks = medMarks / 3.0;
+                } else if (dahs.isEmpty() && !m_unitCalibrated && medMarks >= 0.150) {
+                    fromMarks = 0.0;
                 } else {
                     if (dits.size() >= 5) {
                         dits = dits.mid(dits.size() / 5);
@@ -1131,13 +1346,30 @@ void ThresholdMorseWindow::recomputeUnitFromMarks()
                 fromMarks = a; /* short is dit */
                 strongBimodal = true;
             } else {
-                /* Two similar marks: dits, or two dahs → /3 */
+                /*
+                 * Two copies of one mark (history + the open letter) or two
+                 * marks of one length. Gap ≈ mark is a dit with an element
+                 * gap OR a dah with a letter gap — wait. Gap ≈ mark/3 is a dah.
+                 */
                 const double mid = 0.5 * (a + b);
-                fromMarks = (mid >= 0.45) ? (mid / 3.0) : mid;
+                const bool provedDahs = gapMed >= 0.020 && gapMed < mid * 0.50 && mid >= 0.080;
+                if (provedDahs) {
+                    fromMarks = mid / 3.0;
+                } else if (!m_unitCalibrated) {
+                    fromMarks = 0.0;
+                } else {
+                    const double dahCut = std::max(0.08, m_unitSeconds * 2.2);
+                    fromMarks = (mid >= dahCut) ? (mid / 3.0) : mid;
+                }
             }
         } else {
-            /* Single mark: if long, treat as dah */
-            fromMarks = (marks[0] >= 0.30) ? (marks[0] / 3.0) : marks[0];
+            /* One mark: do not move an unlocked unit. A locked unit may track. */
+            if (!m_unitCalibrated) {
+                fromMarks = 0.0;
+            } else {
+                const double dahCut = std::max(0.08, m_unitSeconds * 2.2);
+                fromMarks = (marks[0] >= dahCut) ? (marks[0] / 3.0) : marks[0];
+            }
         }
 
         if (maxQualityMark >= 0.70 && fromMarks > 0.0) {
@@ -1150,11 +1382,18 @@ void ThresholdMorseWindow::recomputeUnitFromMarks()
     /* Blend mark-based and element-gap-based estimates */
     double med = 0.0;
     if (fromMarks > 0.0 && fromGaps > 0.0) {
-        /* Gaps are often slightly longer than pure dits — light blend */
-        med = 0.62 * fromMarks + 0.38 * fromGaps;
-        /* If they disagree a lot, prefer marks (gaps can include fist stretch) */
-        if (fromGaps > fromMarks * 1.8 || fromMarks > fromGaps * 1.8) {
+        /*
+         * A 21 ms spectrum column fattens marks and shrinks the gap between
+         * dits. When the short gaps are clearly shorter than the short marks,
+         * the dit sits between them. Otherwise gaps are a light blend, and a
+         * large disagreement still prefers the marks.
+         */
+        if (fromMarks > fromGaps * 1.35 && fromMarks < fromGaps * 3.0) {
+            med = 0.45 * fromMarks + 0.55 * fromGaps;
+        } else if (fromGaps > fromMarks * 1.8 || fromMarks > fromGaps * 1.8) {
             med = 0.80 * fromMarks + 0.20 * fromGaps;
+        } else {
+            med = 0.62 * fromMarks + 0.38 * fromGaps;
         }
     } else if (fromMarks > 0.0) {
         med = fromMarks;
@@ -1280,10 +1519,7 @@ void ThresholdMorseWindow::refreshTextView()
     if (m_textView->toPlainText() != m_scrollText) {
         m_textView->setPlainText(m_scrollText);
     }
-    QTextCursor c = m_textView->textCursor();
-    c.movePosition(QTextCursor::End);
-    m_textView->setTextCursor(c);
-    m_textView->ensureCursorVisible();
+    applyCwCopyColors(m_textView);
 }
 
 char ThresholdMorseWindow::morseToChar(const QString &pattern)
@@ -1299,6 +1535,7 @@ void ThresholdMorseWindow::clearDecode()
     emit textChanged(m_scrollText);
     m_pendingMarkDurs.clear();
     m_pendingMarkPeaks.clear();
+    m_pendingGaps.clear();
     m_recentChars.clear();
     m_spamHintCount = 0;
     m_havePendingMark = false;
@@ -1329,6 +1566,7 @@ void ThresholdMorseWindow::resetTiming()
     m_hasState = false;
     m_pendingMarkDurs.clear();
     m_pendingMarkPeaks.clear();
+    m_pendingGaps.clear();
     m_havePendingMark = false;
     m_pendingMarkSec = 0.0;
     m_pendingMarkPeakDb = -200.0f;

@@ -28,6 +28,8 @@ typedef struct {
     char tci_stream_mode[16];
     /* Parallel CW Decode channels (GUI multi-channel Morse). */
     int multi_decode_channels;
+    /* Offline TCI training stream. Empty string uses the live radio. */
+    char training_file[512];
 } config_t;
 
 /**

@@ -1,30 +1,34 @@
 /**
  * @file multichanneldecoder.cpp
- * @brief Parallel CW decode — Threshold or Mask backends
+ * @brief Parallel CW decode — Spectrum, Threshold, or Mask backends
  */
 
 #include "multichanneldecoder.h"
 #include "thresholdmorsewindow.h"
 #include "maskmorsewindow.h"
+#include "spectrummorsewindow.h"
 #include "spectrumwidget.h"
 
 #include <algorithm>
 #include <cmath>
 
-const float MultiChannelDecoder::kMinSnrDb = 4.0f;
+const float MultiChannelDecoder::kMinSnrDb = 16.0f;
 
 MultiChannelDecoder::MultiChannelDecoder(QObject *parent)
     : QObject(parent)
     , m_centerHz(0.0f)
     , m_halfBins(1)
-    , m_maxActive(1)
-    , m_backend(Backend::Threshold)
+    , m_maxActive(10)
+    , m_backend(Backend::Spectrum)
+    , m_columnClockMs(-1)
     , m_lastEmitMs(0)
+    , m_columnSerial(0)
 {
     for (int i = 0; i < kMaxChannels; ++i) {
         m_channels[i].active = false;
         m_channels[i].thrDecoder = nullptr;
         m_channels[i].maskDecoder = nullptr;
+        m_channels[i].scopeDecoder = nullptr;
         resetChannelState(m_channels[i]);
     }
     m_clock.start();
@@ -51,6 +55,8 @@ void MultiChannelDecoder::resetChannelState(Channel &ch)
     ch.offsetHz = 0.0f;
     ch.frequencyHz = 0.0f;
     ch.snrDb = 0.0f;
+    ch.sustained = false;
+    ch.bornSerial = -1;
     ch.powerHist.clear();
 }
 
@@ -64,6 +70,10 @@ void MultiChannelDecoder::destroyChannelEngines(Channel &ch)
         delete ch.maskDecoder;
         ch.maskDecoder = nullptr;
     }
+    if (ch.scopeDecoder) {
+        delete ch.scopeDecoder;
+        ch.scopeDecoder = nullptr;
+    }
 }
 
 void MultiChannelDecoder::clear()
@@ -73,6 +83,7 @@ void MultiChannelDecoder::clear()
         m_channels[i].active = false;
         resetChannelState(m_channels[i]);
     }
+    m_pending.clear();
     emitSnapshot();
 }
 
@@ -132,11 +143,10 @@ void MultiChannelDecoder::setMaxActiveChannels(int n)
 
 QString MultiChannelDecoder::channelText(const Channel &ch) const
 {
-    if (m_backend == Backend::Mask && ch.maskDecoder) {
-        return ch.maskDecoder->trailingText(kDisplayChars);
-    }
-    if (ch.thrDecoder) {
-        return ch.thrDecoder->trailingText(kDisplayChars);
+    /* Full decoder buffer, so CQ and a repeated call can be recolored
+     * anywhere in the text the side window scrolls back through. */
+    if (ch.scopeDecoder) {
+        return ch.scopeDecoder->decodedText();
     }
     return QString();
 }
@@ -149,10 +159,7 @@ QVector<MultiChannelDecoder::ChannelView> MultiChannelDecoder::channels() const
         if (!m_channels[i].active) {
             continue;
         }
-        if (m_backend == Backend::Threshold && !m_channels[i].thrDecoder) {
-            continue;
-        }
-        if (m_backend == Backend::Mask && !m_channels[i].maskDecoder) {
+        if (!m_channels[i].scopeDecoder) {
             continue;
         }
         ChannelView v;
@@ -184,10 +191,15 @@ QVector<MultiChannelDecoder::PeakCand> MultiChannelDecoder::findTopPeaks(
         if (p < gate) {
             continue;
         }
+        /* A tone split equally across two bins is still the peak. A flat
+         * stretch of grass is not: the bin has to rise above one neighbor. */
         if (p < spectrum[b - 1] || p < spectrum[b + 1]) {
             continue;
         }
         if (p < spectrum[b - 2] || p < spectrum[b + 2]) {
+            continue;
+        }
+        if (p <= spectrum[b - 1] && p <= spectrum[b + 1]) {
             continue;
         }
 
@@ -237,7 +249,7 @@ int MultiChannelDecoder::matchChannel(float offsetHz) const
     return best;
 }
 
-int MultiChannelDecoder::allocateChannel(float offsetHz, float snrDb)
+int MultiChannelDecoder::allocateChannel(float offsetHz, float snrDb, bool replaceSustained)
 {
     int activeCount = 0;
     for (int i = 0; i < kMaxChannels; ++i) {
@@ -246,33 +258,66 @@ int MultiChannelDecoder::allocateChannel(float offsetHz, float snrDb)
         }
     }
 
-    auto setupEngines = [this](Channel &ch) {
-        destroyChannelEngines(ch);
-        if (m_backend == Backend::Mask) {
-            ch.maskDecoder = new MaskMorseWindow(nullptr, true);
-            ch.maskDecoder->setPlaybackMode(true);
-            ch.maskDecoder->clearDecode();
-            ch.maskDecoder->resetTiming();
-        } else {
-            ch.thrDecoder = new ThresholdMorseWindow(nullptr, true);
-            ch.thrDecoder->setPlaybackMode(true);
-            ch.thrDecoder->clearDecode();
-            ch.thrDecoder->resetTiming();
+    auto setupEngines = [](Channel &ch) {
+        /* Each side row owns a separate Spectrum decoder. The bottom pane
+         * can still cycle Threshold / Mask / Spectrum on its own. */
+        if (ch.thrDecoder) {
+            delete ch.thrDecoder;
+            ch.thrDecoder = nullptr;
         }
+        if (ch.maskDecoder) {
+            delete ch.maskDecoder;
+            ch.maskDecoder = nullptr;
+        }
+        if (ch.scopeDecoder) {
+            delete ch.scopeDecoder;
+            ch.scopeDecoder = nullptr;
+        }
+        ch.scopeDecoder = new SpectrumMorseWindow(nullptr, true);
+        ch.scopeDecoder->clearDecode();
+        ch.scopeDecoder->resetTiming();
+    };
+
+    auto take = [&](int i) {
+        Channel &ch = m_channels[i];
+        resetChannelState(ch);
+        ch.active = true;
+        ch.offsetHz = offsetHz;
+        ch.snrDb = snrDb;
+        ch.sustained = false;
+        ch.bornSerial = m_columnSerial;
+        setupEngines(ch);
+        return i;
     };
 
     if (activeCount < m_maxActive) {
         for (int i = 0; i < kMaxChannels; ++i) {
             if (!m_channels[i].active) {
-                Channel &ch = m_channels[i];
-                resetChannelState(ch);
-                ch.active = true;
-                ch.offsetHz = offsetHz;
-                ch.snrDb = snrDb;
-                setupEngines(ch);
-                return i;
+                return take(i);
             }
         }
+    }
+
+    /* A spike that never came back can give up its slot immediately. A
+     * signal acquired on this column is still being claimed. */
+    int fleeting = -1;
+    for (int i = 0; i < kMaxChannels; ++i) {
+        if (!m_channels[i].active || m_channels[i].sustained) {
+            continue;
+        }
+        if (m_channels[i].bornSerial == m_columnSerial) {
+            continue;
+        }
+        if (fleeting < 0 || m_channels[i].snrDb < m_channels[fleeting].snrDb) {
+            fleeting = i;
+        }
+    }
+    if (fleeting >= 0) {
+        return take(fleeting);
+    }
+
+    if (!replaceSustained) {
+        return -1;
     }
 
     int weakest = -1;
@@ -285,29 +330,33 @@ int MultiChannelDecoder::allocateChannel(float offsetHz, float snrDb)
         }
     }
     if (weakest >= 0 && snrDb > m_channels[weakest].snrDb + 1.5f) {
-        Channel &ch = m_channels[weakest];
-        resetChannelState(ch);
-        ch.active = true;
-        ch.offsetHz = offsetHz;
-        ch.snrDb = snrDb;
-        setupEngines(ch);
-        return weakest;
+        return take(weakest);
     }
     return -1;
 }
 
-void MultiChannelDecoder::dropStaleChannels(qint64 nowMs)
+void MultiChannelDecoder::rememberPending(const PeakCand &pk)
 {
-    for (int i = 0; i < kMaxChannels; ++i) {
-        if (!m_channels[i].active) {
+    for (PendingPeak &p : m_pending) {
+        if (std::fabs(p.offsetHz - pk.offsetHz) >= static_cast<float>(kMatchHz)) {
             continue;
         }
-        if (nowMs - m_channels[i].lastSeenMs > kChannelTimeoutMs) {
-            destroyChannelEngines(m_channels[i]);
-            m_channels[i].active = false;
-            resetChannelState(m_channels[i]);
+        if (p.lastSerial != m_columnSerial - 1) {
+            p.hits = 0;
         }
+        p.offsetHz = pk.offsetHz;
+        p.snrDb = pk.snrDb;
+        p.hits += 1;
+        p.lastSerial = m_columnSerial;
+        return;
     }
+
+    PendingPeak p;
+    p.offsetHz = pk.offsetHz;
+    p.snrDb = pk.snrDb;
+    p.hits = 1;
+    p.lastSerial = m_columnSerial;
+    m_pending.append(p);
 }
 
 void MultiChannelDecoder::updateChannelThreshold(Channel &ch, float powerDb, float noiseFloorDb)
@@ -480,36 +529,75 @@ void MultiChannelDecoder::processSpectrumColumn(const QVector<float> &spectrum, 
     }
 
     m_centerHz = centerHz;
-    const qint64 nowMs = m_clock.elapsed();
+    /* Wideband hop is one FFT (period = 1/binWidth). Narrow hops ~10.7 ms. */
+    const double periodMs = (binWidth > 20.0f) ? (1000.0 / binWidth) : 10.7;
+    if (m_columnClockMs < 0) {
+        m_columnClockMs = 0;
+    }
+    const qint64 nowMs = m_columnClockMs;
+    m_columnClockMs += static_cast<qint64>(std::llround(periodMs));
+    ++m_columnSerial;
     const QVector<PeakCand> peaks =
         findTopPeaks(spectrum, binWidth, noiseFloorDb, m_maxActive);
 
-    for (const PeakCand &pk : peaks) {
-        int idx = matchChannel(pk.offsetHz);
-        if (idx < 0) {
-            idx = allocateChannel(pk.offsetHz, pk.snrDb);
-        }
+    QVector<bool> matched(peaks.size(), false);
+    const float nearHz = std::max(150.0f, 3.0f * binWidth);
+    for (int p = 0; p < peaks.size(); ++p) {
+        const int idx = matchChannel(peaks[p].offsetHz);
         if (idx < 0) {
             continue;
         }
+        matched[p] = true;
         Channel &ch = m_channels[idx];
-        ch.offsetHz = 0.85f * ch.offsetHz + 0.15f * pk.offsetHz;
-        ch.frequencyHz = centerHz + ch.offsetHz;
-        ch.snrDb = 0.8f * ch.snrDb + 0.2f * pk.snrDb;
-        ch.lastSeenMs = nowMs;
+        /* The 2 kHz window keeps this decoder. Only a peak on the locked
+         * bin refreshes strength, and the lock itself does not move. */
+        if (std::fabs(peaks[p].offsetHz - ch.offsetHz) <= nearHz) {
+            ch.snrDb = 0.8f * ch.snrDb + 0.2f * peaks[p].snrDb;
+            ch.lastSeenMs = nowMs;
+            if (ch.bornSerial != m_columnSerial) {
+                ch.sustained = true;
+            }
+        }
     }
 
-    dropStaleChannels(nowMs);
+    for (int p = 0; p < peaks.size(); ++p) {
+        if (matched[p]) {
+            continue;
+        }
+        if (allocateChannel(peaks[p].offsetHz, peaks[p].snrDb, false) < 0) {
+            rememberPending(peaks[p]);
+        }
+    }
+
+    for (int i = m_pending.size() - 1; i >= 0; --i) {
+        if (m_pending[i].lastSerial != m_columnSerial) {
+            m_pending.removeAt(i);
+        }
+    }
+    for (int i = m_pending.size() - 1; i >= 0; --i) {
+        if (m_pending[i].hits < 2) {
+            continue;
+        }
+        if (allocateChannel(m_pending[i].offsetHz, m_pending[i].snrDb, true) >= 0) {
+            m_pending.removeAt(i);
+        }
+    }
 
     for (int i = 0; i < kMaxChannels; ++i) {
         if (!m_channels[i].active) {
             continue;
         }
         Channel &ch = m_channels[i];
+        ch.frequencyHz = centerHz + ch.offsetHz;
         const float powerDb =
             SpectrumWidget::powerAtOffset(spectrum, ch.offsetHz, binWidth, m_halfBins);
         ch.lastPowerDb = powerDb;
-        feedChannel(ch, powerDb, noiseFloorDb, nowMs);
+        if (!ch.scopeDecoder) {
+            ch.scopeDecoder = new SpectrumMorseWindow(nullptr, true);
+            ch.scopeDecoder->clearDecode();
+            ch.scopeDecoder->resetTiming();
+        }
+        ch.scopeDecoder->feedColumn(powerDb, noiseFloorDb, binWidth);
     }
 
     if (nowMs - m_lastEmitMs >= 60) {

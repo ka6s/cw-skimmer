@@ -40,7 +40,7 @@ void SettingsDialog::createUI()
     auto *hostLayout = new QHBoxLayout();
     hostLayout->addWidget(new QLabel(QStringLiteral("Radio Host:"), radioGroup));
     m_radioHostEdit = new QLineEdit(radioGroup);
-    m_radioHostEdit->setText(QStringLiteral("192.168.2.146"));
+    m_radioHostEdit->setText(QStringLiteral("127.0.0.1"));
     hostLayout->addWidget(m_radioHostEdit);
     radioLayout->addLayout(hostLayout);
 
@@ -93,11 +93,12 @@ void SettingsDialog::createUI()
     decodeChLayout->addWidget(new QLabel(QStringLiteral("CW Decode channels:"), detectionGroup));
     m_decodeChannelsSpinBox = new QSpinBox(detectionGroup);
     m_decodeChannelsSpinBox->setRange(1, 16);
-    m_decodeChannelsSpinBox->setValue(1);
+    m_decodeChannelsSpinBox->setValue(10);
     m_decodeChannelsSpinBox->setToolTip(
         QStringLiteral(
-            "Number of parallel Morse decode threads in the CW Decode panel\n"
-            "(strongest signals). Each channel has independent Auto thr / WPM."));
+            "How many of the strongest signals the selected decoder watches.\n"
+            "The waterfall selection is copied in the Morse Decoder window.\n"
+            "The others are listed beside the spectrum."));
     decodeChLayout->addWidget(m_decodeChannelsSpinBox);
     decodeChLayout->addStretch();
     detectionLayout->addLayout(decodeChLayout);
@@ -136,7 +137,7 @@ void SettingsDialog::loadSettings()
 
 QString SettingsDialog::getRadioHost() const
 {
-    return m_radioHostEdit ? m_radioHostEdit->text() : QStringLiteral("192.168.2.146");
+    return m_radioHostEdit ? m_radioHostEdit->text() : QStringLiteral("127.0.0.1");
 }
 
 int SettingsDialog::getRadioPort() const
@@ -173,7 +174,7 @@ QString SettingsDialog::getCallsign() const
 
 int SettingsDialog::getDecodeChannels() const
 {
-    return m_decodeChannelsSpinBox ? m_decodeChannelsSpinBox->value() : 1;
+    return m_decodeChannelsSpinBox ? m_decodeChannelsSpinBox->value() : 10;
 }
 
 void SettingsDialog::setDecodeChannels(int n)

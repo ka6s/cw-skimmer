@@ -4,6 +4,7 @@
  */
 
 #include "maskmorsewindow.h"
+#include "cwcopyformat.h"
 
 #include <QCheckBox>
 #include <QHBoxLayout>
@@ -11,7 +12,6 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSlider>
-#include <QTextCursor>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -126,8 +126,9 @@ MaskMorseWindow::MaskMorseWindow(QWidget *parent, bool headless)
         "Mask Morse: pulse fill (rise→fall). Look-ahead ~4 dahs pre-sets\n"
         "mask height from upcoming dah tops; widths local. RED=looking GREEN=hit.");
     m_textView->setStyleSheet(
-        "QPlainTextEdit { background: #0a0a0c; color: #88ffaa; font-family: Courier; "
+        "QPlainTextEdit { background: #0a0a0c; color: #dcdcdc; font-family: Courier; "
         "font-size: 18px; }");
+    installCwCopyHighlighter(m_textView);
 
     m_clearButton = new QPushButton("Clear Text", this);
     m_resetTimingButton = new QPushButton("Reset Timing", this);
@@ -1706,9 +1707,7 @@ void MaskMorseWindow::refreshTextView()
         return;
     }
     m_textView->setPlainText(m_scrollText);
-    QTextCursor c = m_textView->textCursor();
-    c.movePosition(QTextCursor::End);
-    m_textView->setTextCursor(c);
+    applyCwCopyColors(m_textView);
 }
 
 void MaskMorseWindow::clearDecode()

@@ -59,6 +59,8 @@ SpectrumWidget::SpectrumWidget(QWidget *parent)
     , m_perfPaintTotalMs(0.0)
     , m_perfPaintMaxMs(0.0)
     , m_perfPaintCount(0)
+    , m_viewLowHz(0.0f)
+    , m_viewSpanHz(0.0f)
 {
     setMinimumHeight(300);
     setStyleSheet("background-color: black;");
@@ -187,15 +189,46 @@ int SpectrumWidget::offsetToBinIndex(float freqOffsetHz, int numBins) const
     return std::max(0, std::min(numBins - 1, binIndex));
 }
 
+void SpectrumWidget::visibleFrequency(int numBins, float &lowHz, float &highHz) const
+{
+    const float bw = (m_binWidth > 0.0f) ? m_binWidth : 1.0f;
+    const float span = std::max(0.0f, static_cast<float>(std::max(0, numBins)) * bw);
+    const float fullLow = -0.5f * span;
+    if (m_viewSpanHz <= 1.0f || span <= m_viewSpanHz + 1.0f) {
+        lowHz = fullLow;
+        highHz = fullLow + span;
+        return;
+    }
+    const float maxLow = fullLow + span - m_viewSpanHz;
+    const float low = std::max(fullLow, std::min(maxLow, m_viewLowHz));
+    lowHz = low;
+    highHz = low + m_viewSpanHz;
+}
+
+void SpectrumWidget::setFrequencyView(float lowHz, float spanHz)
+{
+    if (std::fabs(lowHz - m_viewLowHz) < 0.5f && std::fabs(spanHz - m_viewSpanHz) < 0.5f) {
+        return;
+    }
+    m_viewLowHz = lowHz;
+    m_viewSpanHz = spanHz;
+    rebuildWaterfallImage();
+    update();
+}
+
 int SpectrumWidget::binIndexToY(int binIndex, int numBins, int plotY, int plotHeight) const
 {
-    if (numBins <= 1) {
+    if (numBins <= 1 || plotHeight <= 0) {
         return plotY + plotHeight / 2;
     }
 
-    const float yf = plotY +
-        ((numBins - 1 - binIndex) / static_cast<float>(numBins - 1)) * plotHeight;
-    return static_cast<int>(yf);
+    float lowHz = 0.0f;
+    float highHz = 0.0f;
+    visibleFrequency(numBins, lowHz, highHz);
+    const float span = std::max(1.0f, highHz - lowHz);
+    const float freq = (static_cast<float>(binIndex) - static_cast<float>(numBins) / 2.0f) * m_binWidth;
+    const float frac = (highHz - freq) / span;
+    return static_cast<int>(std::lround(plotY + frac * static_cast<float>(plotHeight)));
 }
 
 QRect SpectrumWidget::plotRect() const
@@ -218,10 +251,23 @@ float SpectrumWidget::yToFreqOffsetHz(int y) const
         return 0.0f;
     }
 
-    const float frac = 1.0f - (y - plotY) / static_cast<float>(plotHeight);
-    int binIndex = static_cast<int>(std::lround(frac * (numBins - 1)));
-    binIndex = std::max(0, std::min(numBins - 1, binIndex));
-    return (binIndex - numBins / 2) * m_binWidth;
+    float lowHz = 0.0f;
+    float highHz = 0.0f;
+    visibleFrequency(numBins, lowHz, highHz);
+    const float frac = (y - plotY) / static_cast<float>(plotHeight);
+    const float clamped = std::max(0.0f, std::min(1.0f, frac));
+    return highHz - clamped * (highHz - lowHz);
+}
+
+void SpectrumWidget::wheelEvent(QWheelEvent *event)
+{
+    const int dy = event->angleDelta().y();
+    if (dy == 0) {
+        QWidget::wheelEvent(event);
+        return;
+    }
+    emit verticalScrollRequested(dy);
+    event->accept();
 }
 
 void SpectrumWidget::mousePressEvent(QMouseEvent *event)
@@ -406,12 +452,19 @@ void SpectrumWidget::drawWaterfallColumn(int x, const QVector<float> &spectrum, 
     }
 
     const int numBins = spectrum.size();
+    float lowHz = 0.0f;
+    float highHz = 0.0f;
+    visibleFrequency(numBins, lowHz, highHz);
+    const float viewSpan = std::max(1.0f, highHz - lowHz);
+    const float bw = (m_binWidth > 0.0f) ? m_binWidth : (viewSpan / static_cast<float>(std::max(1, numBins)));
 
     for (int disp_row = 0; disp_row < m_plotHeight; ++disp_row) {
-        const float frac0 = static_cast<float>(disp_row) / m_plotHeight;
-        const float frac1 = static_cast<float>(disp_row + 1) / m_plotHeight;
-        int bin_hi = static_cast<int>((1.0f - frac0) * numBins);
-        int bin_lo = static_cast<int>((1.0f - frac1) * numBins);
+        const float frac0 = static_cast<float>(disp_row) / static_cast<float>(m_plotHeight);
+        const float frac1 = static_cast<float>(disp_row + 1) / static_cast<float>(m_plotHeight);
+        const float fHi = highHz - frac0 * viewSpan;
+        const float fLo = highHz - frac1 * viewSpan;
+        int bin_hi = static_cast<int>(std::floor(static_cast<float>(numBins) / 2.0f + fHi / bw));
+        int bin_lo = static_cast<int>(std::floor(static_cast<float>(numBins) / 2.0f + fLo / bw));
         bin_hi = std::max(0, std::min(numBins - 1, bin_hi));
         bin_lo = std::max(0, std::min(numBins - 1, bin_lo));
         if (bin_lo > bin_hi) {
@@ -801,6 +854,9 @@ void SpectrumWidget::paintEvent(QPaintEvent * /*event*/)
             }
             const int binIndex = offsetToBinIndex(signal.freqOffsetHz, numBins);
             const int y = binIndexToY(binIndex, numBins, plotY, plotHeight);
+            if (y < plotY || y > plotY + plotHeight) {
+                continue;
+            }
             const int markerX = plotX + plotWidth - 8;
             int alpha = 255 - static_cast<int>((age / static_cast<float>(m_maxSignalAge)) * 220);
             alpha = std::max(40, std::min(255, alpha));
@@ -820,6 +876,7 @@ void SpectrumWidget::paintEvent(QPaintEvent * /*event*/)
     if (m_hasTraceSelection) {
         const int binIndex = offsetToBinIndex(m_traceOffsetHz, numBins);
         const int y = binIndexToY(binIndex, numBins, plotY, plotHeight);
+        if (y >= plotY && y <= plotY + plotHeight) {
         painter.setPen(QPen(QColor(0, 255, 120), 1, Qt::DashLine));
         painter.drawLine(plotX, y, plotX + plotWidth, y);
         painter.setBrush(QColor(0, 255, 120));
@@ -830,6 +887,7 @@ void SpectrumWidget::paintEvent(QPaintEvent * /*event*/)
         painter.setFont(QFont("Courier", 8));
         painter.drawText(plotX + 6, y - 4,
                          QString("TRACE %1 Hz").arg(m_traceOffsetHz, 0, 'f', 0));
+        }
     }
 
     painter.setPen(Qt::white);
@@ -837,13 +895,14 @@ void SpectrumWidget::paintEvent(QPaintEvent * /*event*/)
     painter.drawText(plotX - 35, plotY - 5, "Freq");
 
     if (m_binWidth > 0 && numBins > 0) {
-        /* Narrow spans need more RF digits so labels still change when tuning */
-        const float spanHz = m_binWidth * static_cast<float>(numBins);
-        const int mhzDigits = (spanHz < 10000.0f) ? 4 : 3;
+        float lowHz = 0.0f;
+        float highHz = 0.0f;
+        visibleFrequency(numBins, lowHz, highHz);
+        const float viewSpan = highHz - lowHz;
+        const int mhzDigits = (viewSpan <= 10000.0f) ? 4 : 3;
         for (int i = 0; i <= 4; ++i) {
             const int y = plotY + (i * plotHeight) / 4;
-            const int binIndex = (4 - i) * numBins / 4;
-            const float offset_hz = (binIndex - numBins / 2.0f) * m_binWidth;
+            const float offset_hz = highHz - (static_cast<float>(i) / 4.0f) * viewSpan;
             const float freq_mhz = (m_centerFrequency + offset_hz) / 1000000.0f;
             painter.drawText(plotX - 62, y + 4,
                              QString::number(freq_mhz, 'f', mhzDigits));
