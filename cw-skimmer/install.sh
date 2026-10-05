@@ -1,5 +1,6 @@
 #!/bin/bash
-# Installation script for CW Skimmer
+# Install the command-line detector (bin/cw-skimmer) and its systemd unit.
+# The Qt window is separate: make gui, then run bin/cw-skimmer-gui.
 
 set -e
 

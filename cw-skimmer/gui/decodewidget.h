@@ -1,6 +1,6 @@
 /**
  * @file decodewidget.h
- * @brief CW copy for each 2 kHz spectrum slice, beside the waterfall
+ * @brief CW copy for each 1 kHz spectrum slice, beside the waterfall
  *
  * Each slice that has copied text gets one line, painted on the signal that
  * slice is following. The line stays after the CW stops, including when that
@@ -67,7 +67,7 @@ protected:
 
 private:
     struct DecodeLine {
-        int slot;           /* 2 kHz slice, or -1 for the legacy single stream */
+        int slot;           /* 1 kHz slice, or -1 for the legacy single stream */
         float frequencyHz;
         float freqOffsetHz;
         QString text;       /* private decoder buffer; paint keeps what fits the row */
@@ -101,8 +101,8 @@ private:
     static const int kPlotTop = 20;
     static const int kPlotBottomMargin = 40;
     static const int kHeaderHeight = 18;
-    static const int kMaxLines = 24;
-    static const int kChannelMatchHz = 2000;
+    static const int kMaxLines = 48;
+    static const int kChannelMatchHz = 1000;
     static const int kDefaultChars = 10;
 };
 

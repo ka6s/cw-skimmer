@@ -1,8 +1,8 @@
 /**
  * @file multichanneldecoder.h
- * @brief One Spectrum decoder for each 2 kHz slice of the waterfall
+ * @brief One Spectrum decoder for each 1 kHz slice of the waterfall
  *
- * A 48 kHz spectrum is 24 slices. Each slice follows the strongest signal
+ * A 48 kHz spectrum is 48 slices. Each slice follows the strongest signal
  * inside it. A small drift stays on the same decoder. A louder signal
  * elsewhere in the slice takes over after it has been the strongest for
  * two columns, and the copy already decoded stays with it. That copy
@@ -30,13 +30,13 @@ class MultiChannelDecoder : public QObject {
     Q_OBJECT
 
 public:
-    /* 48 kHz / 2 kHz. A wider span still gets one slice per 2 kHz, up to this. */
-    static const int kMaxChannels = 24;
-    static constexpr int kSlotHz = 2000;
+    /* 48 kHz / 1 kHz. A wider span still gets one slice per 1 kHz, up to this. */
+    static const int kMaxChannels = 48;
+    static constexpr int kSlotHz = 1000;
     /* Tail kept per channel. The side list shows a window into that buffer. */
     static const int kDisplayChars = 256;
 
-    /** How many 2 kHz slices cover this spectrum span. */
+    /** How many 1 kHz slices cover this spectrum span. */
     static int slotCountForSpan(float spanHz);
     /** Slice index that contains offsetHz. */
     static int slotForOffset(float offsetHz, float spanHz);
@@ -76,7 +76,7 @@ public:
 
     QVector<ChannelView> channels() const;
 
-    /** Copy already decoded in the 2 kHz slice that contains offsetHz. */
+    /** Copy already decoded in the 1 kHz slice that contains offsetHz. */
     QString textForOffset(float offsetHz) const;
 
 signals:

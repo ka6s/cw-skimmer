@@ -13,10 +13,9 @@ struct cw_decoder {
     int callsign_ready;
 };
 
-int cw_decoder_global_init(const char *model_path)
+int cw_decoder_global_init(void)
 {
-    (void)model_path;
-    LOG_INFO("ditdah Morse decoder initialized (no model required)");
+    LOG_INFO("ditdah Morse decoder initialized");
     return 0;
 }
 

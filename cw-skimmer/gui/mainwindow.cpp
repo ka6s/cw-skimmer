@@ -367,7 +367,7 @@ void MainWindow::createToolBar()
         "  Threshold — mark/space on the signal trace\n"
         "  Mask — dit/dah boxes on the signal trace\n"
         "  Spectrum — white/black runs on the waterfall, copied 6 dahs behind\n"
-        "Beside the waterfall, each 2 kHz slice has its own Spectrum decoder\n"
+        "Beside the waterfall, each 1 kHz slice has its own Spectrum decoder\n"
         "and follows the strongest signal in that slice.\n"
         "Click one on the waterfall to copy its text into the Morse Decoder\n"
         "and keep decoding it there and beside the spectrum.");
@@ -873,7 +873,7 @@ void MainWindow::onSpectrumColumnsReady(QVector<QVector<float>> columns, float c
         m_spectrumWidget->appendSpectrumColumns(columns, centerFreq, binWidth);
     }
     /*
-     * Each 2 kHz slice keeps its own Spectrum decoder.
+     * Each 1 kHz slice keeps its own Spectrum decoder.
      * The Decoder button only changes the bottom Morse pane.
      * Listen bandwidth matches CW Signal Trace "Listen bins ±" when open.
      */

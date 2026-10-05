@@ -24,7 +24,7 @@ public:
     int getDetectionThreshold() const;
     double getMinSnrDb() const;
     QString getCallsign() const;
-    /** One decoder per 2 kHz slice (1…24; 24 covers 48 kHz). */
+    /** One decoder per 1 kHz slice (1…48; 48 covers 48 kHz). */
     int getDecodeChannels() const;
     void setDecodeChannels(int n);
 

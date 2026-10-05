@@ -1,5 +1,5 @@
 [Unit]
-Description=CW Skimmer - Real-time CW Signal Detector
+Description=CW Skimmer command-line detector
 After=network-online.target
 Wants=network-online.target
 

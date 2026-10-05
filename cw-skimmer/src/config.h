@@ -20,13 +20,12 @@ typedef struct {
     int spot_enabled;         // 0=disabled, 1=enable spot network reporting
     int log_level;            // 0=debug, 1=info, 2=warn, 3=error
     char log_file[256];
-    char deepcw_model_path[512];
     /* Spectrum span in Hz: 0 or sample_rate = full 48 kHz (default/working).
      * 3000 = experimental ±1.5 kHz around VFO, finer bins / faster hop. */
     int spectrum_span_hz;
     /* TCI binary stream: "iq" (complex baseband) or "audio" (demod L/R). */
     char tci_stream_mode[16];
-    /* Spectrum slices decoded beside the waterfall (one per 2 kHz, up to 24). */
+    /* Spectrum slices decoded beside the waterfall (one per 1 kHz, up to 48). */
     int multi_decode_channels;
     /* Offline TCI training stream. Empty string uses the live radio. */
     char training_file[512];

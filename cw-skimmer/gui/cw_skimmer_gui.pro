@@ -9,7 +9,6 @@ TEMPLATE = app
 
 # Include paths
 INCLUDEPATH += $$PWD/../include $$PWD/../src
-INCLUDEPATH += $$PWD/../onnxruntime-linux-x64-1.20.1/include
 
 # Source files
 SOURCES += \
@@ -27,7 +26,6 @@ SOURCES += \
     thresholdmorsewindow.cpp \
     maskmorsewindow.cpp \
     spectrummorsewindow.cpp \
-    deepcwmorsewindow.cpp \
     multichanneldecoder.cpp \
     audiomonitor.cpp
 
@@ -45,7 +43,6 @@ HEADERS += \
     thresholdmorsewindow.h \
     maskmorsewindow.h \
     spectrummorsewindow.h \
-    deepcwmorsewindow.h \
     multichanneldecoder.h \
     audiomonitor.h
 
@@ -66,14 +63,10 @@ SOURCES += \
     ../src/logger.c \
     ../src/signal_analyzer.c \
     ../src/spot_reporter.c \
-    ../src/tci_client.c \
-    ../src/deepcw_engine.c
+    ../src/tci_client.c
 
 unix {
     LIBS += -lpthread -lm -lwebsockets
-    LIBS += -L$$PWD/../onnxruntime-linux-x64-1.20.1/lib -lonnxruntime
-    # Runtime: binary lives in bin/; find libonnxruntime next to project tree
-    QMAKE_LFLAGS += -Wl,-rpath,\'\$$ORIGIN/../onnxruntime-linux-x64-1.20.1/lib\'
 }
 
 # Compiler flags

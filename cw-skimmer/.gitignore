@@ -8,8 +8,6 @@ moc_*.o
 *.so.*
 .qmake.stash
 
-# Large third-party / local runtime
-onnxruntime-*/
 *.log
 
 # Captures (local RF recordings — regenerate as needed)

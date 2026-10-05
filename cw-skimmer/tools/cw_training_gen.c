@@ -43,7 +43,7 @@
 #define TRAIN_REF_AMPLITUDE 0.20f
 /* 0 dB is full strength: carrier amplitude TRAIN_REF_AMPLITUDE. */
 #define TRAIN_FULL_DB 0.0f
-/* Center-to-center. Matches one decoder per 2 kHz window. */
+/* Center-to-center. Training tones stay at least 2 kHz apart. */
 #define TRAIN_MIN_SEP_HZ 2000.0f
 #define TRAIN_LEVEL_PARTS 3
 /* cw_train text is scanned with %127[^;] into a 128-byte field. */

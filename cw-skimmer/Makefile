@@ -26,8 +26,7 @@ endif
 TARGET = $(BINDIR)/cw-skimmer
 GUI_TARGET = $(BINDIR)/cw-skimmer-gui
 
-# Source files (deepcw_engine.c excluded — ditdah decoder replaces DeepCW)
-SOURCES = $(filter-out $(SRCDIR)/deepcw_engine.c,$(wildcard $(SRCDIR)/*.c))
+SOURCES = $(wildcard $(SRCDIR)/*.c)
 HEADERS = $(wildcard $(SRCDIR)/*.h)
 # Include API wrapper in build
 API_SOURCES = $(SRCDIR)/cwskimmer_api.c
