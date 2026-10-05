@@ -1,3 +1,7 @@
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE
+#endif
+
 /**
  * @file cwskimmer_api.c
  * @brief Implementation of thread-safe C/Qt bridge API
