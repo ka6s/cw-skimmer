@@ -4,6 +4,10 @@ greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
 CONFIG += c++17
 
+# DEBUG hides Training file and Audio out, and those features do not run.
+# Remove this line to show them again.
+DEFINES += DEBUG
+
 TARGET = cw-skimmer-gui
 TEMPLATE = app
 

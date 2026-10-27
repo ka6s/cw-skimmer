@@ -130,6 +130,8 @@ private:
     void syncSpectrumRfSign();
     void requestRadioTune(float pictureOffsetHz);
     void followRadioTune(float newCenterHz, const QVector<float> &column, float binWidth);
+    /* Reported VFO after a click. The IQ picture stays on the pre-tune center. */
+    float pictureCenterForColumns(float reportedCenter);
     void refreshMorseLabels();
     void syncCwKeyboard();
     QString cwTransportLabel() const;
@@ -203,6 +205,9 @@ private:
     double m_radioTuneFromCenter;
     float m_radioTunePicture;
     int m_radioTuneSettle;
+    /* IQ bins stay put when the VFO moves, so labels keep the pre-tune center. */
+    bool m_holdPictureCenter;
+    double m_pictureAnchorHz;
 };
 
 #endif // MAINWINDOW_H

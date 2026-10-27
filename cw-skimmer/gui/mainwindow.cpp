@@ -124,6 +124,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_radioTuneFromCenter(0.0)
     , m_radioTunePicture(0.0f)
     , m_radioTuneSettle(0)
+    , m_holdPictureCenter(false)
+    , m_pictureAnchorHz(0.0)
 {
     for (QLineEdit *&edit : m_fnKeyEdit) {
         edit = nullptr;
@@ -411,6 +413,7 @@ void MainWindow::createMenuBar()
             m_traceWindow->activateWindow();
         }
     });
+#if !DEBUG
     QAction *trainingAction = toolsMenu->addAction("&Training file…");
     trainingAction->setToolTip("Choose a .tcistream file. Playback starts only from Start playback.");
     connect(trainingAction, &QAction::triggered, this, &MainWindow::onChooseTrainingFile);
@@ -418,6 +421,7 @@ void MainWindow::createMenuBar()
     playbackAction->setToolTip("Play the chosen training file through the detector");
     connect(playbackAction, &QAction::triggered, this, &MainWindow::onStartPlaybackClicked);
     toolsMenu->addSeparator();
+#endif
     QAction *playAction = toolsMenu->addAction("&Play capture…");
     playAction->setToolTip(
         "Replay a saved .wav / .cwtrace through Signal Trace and Threshold Morse "
@@ -479,6 +483,7 @@ void MainWindow::createToolBar()
     connect(clearButton, &QPushButton::clicked, this, &MainWindow::onClearClicked);
     toolBar->addWidget(clearButton);
 
+#if !DEBUG
     toolBar->addSeparator();
     m_trainingFileButton = new QPushButton("Training file…");
     m_trainingFileButton->setToolTip(
@@ -491,6 +496,7 @@ void MainWindow::createToolBar()
     m_playTrainingButton->setEnabled(false);
     connect(m_playTrainingButton, &QPushButton::clicked, this, &MainWindow::onStartPlaybackClicked);
     toolBar->addWidget(m_playTrainingButton);
+#endif
 
     toolBar->addSeparator();
     QPushButton *playButton = new QPushButton("Play capture…");
@@ -527,12 +533,14 @@ void MainWindow::createToolBar()
     updateMorseBackendButton();
     updateTciStreamButton();
 
+#if !DEBUG
     toolBar->addSeparator();
     m_audioMonitor = new AudioMonitor(this);
     toolBar->addWidget(new QLabel(QStringLiteral("Audio out:"), toolBar));
     toolBar->addWidget(m_audioMonitor->deviceCombo());
     toolBar->addWidget(new QLabel(QStringLiteral("Vol"), toolBar));
     toolBar->addWidget(m_audioMonitor->volumeSlider());
+#endif
 }
 
 void MainWindow::createStatusBar()
@@ -591,10 +599,15 @@ void MainWindow::initializeWorker()
         }
     }
 
+#if !DEBUG
     const QString configuredTraining = m_worker->configValue(QStringLiteral("training_file"));
     if (!configuredTraining.isEmpty()) {
         setTrainingFile(configuredTraining);
     }
+#else
+    /* DEBUG leaves training playback off even if the config names a file. */
+    m_worker->setConfig(QStringLiteral("training_file"), QString());
+#endif
 
     if (m_cwKeyboard) {
         bool wpmOk = false;
@@ -783,6 +796,7 @@ void MainWindow::onToggleTciStreamMode()
     updateTciStreamButton();
     applyTciStreamMode();
     syncSpectrumRfSign();
+    m_holdPictureCenter = false;
     if (m_spectrumWidget) {
         m_spectrumWidget->clear();
     }
@@ -920,6 +934,7 @@ void MainWindow::stopDetection(const QString &reason)
     m_isRunning = false;
     m_isConnected = false;
     m_radioTunePending = false;
+    m_holdPictureCenter = false;
     if (m_worker) {
         m_worker->cwStop();
     }
@@ -1080,21 +1095,23 @@ void MainWindow::onSpectrumColumnsReady(QVector<QVector<float>> columns, float c
         return;
     }
 
-    /* Follow radio VFO: update labels / status whenever center moves */
-    if (centerFreq > 1.0e5f) {
-        if (std::fabs(centerFreq - m_lastCenterFreqHz) > 5.0f) {
+    /* The log follows the radio. The picture keeps its own center. */
+    const float reportedCenter = centerFreq;
+    if (reportedCenter > 1.0e5f) {
+        if (std::fabs(reportedCenter - m_lastCenterFreqHz) > 5.0f) {
             if (m_lastCenterFreqHz > 1.0e5f) {
                 onLogMessage(QString("Radio frequency now %1 MHz (was %2)")
-                                 .arg(centerFreq / 1e6f, 0, 'f', 6)
+                                 .arg(reportedCenter / 1e6f, 0, 'f', 6)
                                  .arg(m_lastCenterFreqHz / 1e6f, 0, 'f', 6),
                              1);
             }
-            m_lastCenterFreqHz = centerFreq;
+            m_lastCenterFreqHz = reportedCenter;
             updateStatusBar();
         } else {
-            m_lastCenterFreqHz = centerFreq;
+            m_lastCenterFreqHz = reportedCenter;
         }
     }
+    centerFreq = pictureCenterForColumns(reportedCenter);
 
     if (m_decodeWidget) {
         m_decodeWidget->setFrequencyScale(centerFreq, binWidth, columns.last().size());
@@ -1131,6 +1148,7 @@ void MainWindow::onSpectrumColumnsReady(QVector<QVector<float>> columns, float c
     }
     /* Feed single-signal scope even while main display is live */
     feedTraceFromColumns(columns, binWidth);
+    /* followRadioTune needs the radio's reported center, not the held picture. */
 
     /*
      * Spectrum decoder reads the waterfall pixels at the selected trace
@@ -1154,7 +1172,7 @@ void MainWindow::onSpectrumColumnsReady(QVector<QVector<float>> columns, float c
                 QString("IF %1 Hz").arg(traceDisplayHz(), 0, 'f', 0));
         }
     }
-    followRadioTune(centerFreq, columns.last(), binWidth);
+    followRadioTune(reportedCenter, columns.last(), binWidth);
 }
 
 void MainWindow::onSpectrumModeWide()
@@ -1163,6 +1181,7 @@ void MainWindow::onSpectrumModeWide()
         m_worker->setConfig(QStringLiteral("spectrum_span_hz"), QStringLiteral("0"));
     }
     m_spectrumModeLabel = QStringLiteral("WIDE");
+    m_holdPictureCenter = false;
     if (m_spectrumWidget) {
         m_spectrumWidget->clear();
     }
@@ -1179,6 +1198,7 @@ void MainWindow::onSpectrumModeNarrow3k()
         m_worker->setConfig(QStringLiteral("spectrum_span_hz"), QStringLiteral("3000"));
     }
     m_spectrumModeLabel = QStringLiteral("NARROW 3k");
+    m_holdPictureCenter = false;
     if (m_spectrumWidget) {
         m_spectrumWidget->clear();
     }
@@ -1317,9 +1337,8 @@ void MainWindow::onSignalTraceRequested(float freqOffsetHz, float absFreqHz)
                  1);
     updateMonitorChannel();
     updateStatusBar();
-    /* Put the selection in the middle of the spectrum, then move the radio
-     * so that frequency becomes the center of the 48 kHz IQ window. */
-    centerSpectrumOn(freqOffsetHz);
+    /* Move the radio so this row is the transmit frequency. Leave the
+     * waterfall slice where it is. */
     requestRadioTune(freqOffsetHz);
 }
 
@@ -1655,6 +1674,12 @@ void MainWindow::requestRadioTune(float pictureOffsetHz)
     m_radioTuneFromCenter = center;
     m_radioTunePicture = pictureOffsetHz;
     m_radioTuneSettle = 0;
+    /* The IQ waterfall does not slide with this VFO change. Keep labeling
+     * the rows from the center they were drawn against. */
+    if (iq) {
+        m_holdPictureCenter = true;
+        m_pictureAnchorHz = center;
+    }
     LOG_INFO("Click tune center=%.0f picture=%+.0f target=%lld conj=%d iq=%d",
              center, static_cast<double>(pictureOffsetHz), hz,
              m_iqConjugate ? 1 : 0, iq ? 1 : 0);
@@ -1714,35 +1739,44 @@ void MainWindow::followRadioTune(float newCenterHz, const QVector<float> &column
     }
 
     /*
-     * The dial has arrived. On IQ the oscillator moved with it, so the
-     * station that was clicked is now the dial carrier. deskHPSDR shifts
-     * CW IQ so that carrier is FFT bin 0: the sidetone in the headphones
-     * and the frequency the radio will transmit. Put the line and the
-     * decoder on that bin. Do not tune again. Demodulated audio is a
-     * pitched tone, so leave that target where the click put it.
+     * The dial has arrived, so the radio will transmit on the clicked
+     * station. The IQ bins do not move with that VFO change: the carrier
+     * stays on the click row. Leave the green line, the decoder, and the
+     * waterfall slice there. Do not tune again.
      */
     if (!m_radioTuneIq) {
         m_radioTunePending = false;
         return;
     }
 
-    m_spectrumWidget->setPictureOriginHz(0.0f);
-    if (m_decodeWidget) {
-        m_decodeWidget->setPictureOriginHz(0.0f);
-    }
-    const float power = SpectrumWidget::powerAtOffset(column, 0.0f, binWidth, 1);
-    m_traceWindow->setTarget(0.0f, static_cast<float>(m_radioTuneHz), binWidth);
-    m_cwskRetune = true;
-    m_deepcwRetune = true;
-    m_spectrumWidget->setTraceOffsetHz(0.0f);
+    const float fftHz = m_traceWindow->targetOffsetHz();
+    const float power = SpectrumWidget::powerAtOffset(column, fftHz, binWidth, 1);
     m_spectrumWidget->setTraceRadioHz(m_radioTuneHz);
-    syncTuneSlider(0.0f);
-    centerSpectrumOn(0.0f);
     refreshMorseLabels();
     updateStatusBar();
-    LOG_INFO("Follow center %.0f target %.0f dial carrier bin 0 power %.1f dB",
-             center, m_radioTuneHz, static_cast<double>(power));
+    LOG_INFO("Follow center %.0f target %.0f picture %+.0f held power %.1f dB",
+             center, m_radioTuneHz, static_cast<double>(fftHz),
+             static_cast<double>(power));
     m_radioTunePending = false;
+}
+
+float MainWindow::pictureCenterForColumns(float reportedCenter)
+{
+    if (reportedCenter < 1.0e5f) {
+        return reportedCenter;
+    }
+    if (m_holdPictureCenter && m_pictureAnchorHz > 1.0e5) {
+        const double reported = static_cast<double>(reportedCenter);
+        const bool atCommand = std::fabs(reported - m_radioTuneHz) < 40.0;
+        const bool atAnchor = std::fabs(reported - m_pictureAnchorHz) < 40.0;
+        if (m_radioTunePending || atCommand || atAnchor) {
+            return static_cast<float>(m_pictureAnchorHz);
+        }
+        /* The operator moved the dial. Label the new IQ center. */
+        m_holdPictureCenter = false;
+    }
+    m_pictureAnchorHz = reportedCenter;
+    return reportedCenter;
 }
 
 int MainWindow::spectrumFullLowHz(int fullSpanHz) const
@@ -2029,6 +2063,9 @@ void MainWindow::setTrainingFile(const QString &path)
 
 void MainWindow::onChooseTrainingFile()
 {
+#if DEBUG
+    return;
+#else
     const QString path = QFileDialog::getOpenFileName(
         this,
         QStringLiteral("Choose training file"),
@@ -2039,10 +2076,14 @@ void MainWindow::onChooseTrainingFile()
     }
     setTrainingFile(path);
     onLogMessage(QStringLiteral("Training file selected: %1").arg(path), 1);
+#endif
 }
 
 void MainWindow::onStartPlaybackClicked()
 {
+#if DEBUG
+    return;
+#else
     if (!m_worker) {
         return;
     }
@@ -2060,6 +2101,7 @@ void MainWindow::onStartPlaybackClicked()
     m_freezeDisplay = false;
     m_trainingPlayback = true;
     m_radioTunePending = false;
+    m_holdPictureCenter = false;
     syncCwKeyboard();
     onLogMessage(QStringLiteral("Training playback: %1").arg(m_trainingFile), 1);
     QMetaObject::invokeMethod(m_worker, "setConfig", Qt::QueuedConnection,
@@ -2071,6 +2113,7 @@ void MainWindow::onStartPlaybackClicked()
     m_spectrumModeLabel = QStringLiteral("WIDE");
     updateStatusBar();
     QMetaObject::invokeMethod(m_worker, "start", Qt::QueuedConnection);
+#endif
 }
 
 void MainWindow::onPlayCapture()
