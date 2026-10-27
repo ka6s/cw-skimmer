@@ -85,6 +85,37 @@ typedef struct {
 } tci_train_signal_t;
 
 static tci_ws_context_t *g_ws_context = NULL;
+static lws_sorted_usec_list_t g_ws_wake;
+
+/*
+ * libwebsockets 4.x ignores the timeout passed to lws_service() and sleeps
+ * until the next socket event or scheduled callback. With no IQ frames that
+ * is the radio's next text message, about 30 s, and the detection loop
+ * cannot report "connected" or notice a silent iq_start. A 10 ms callback
+ * is what makes the service call return.
+ */
+static void tci_ws_wake_cb(lws_sorted_usec_list_t *sul)
+{
+    if (!g_ws_context || !g_ws_context->context) {
+        return;
+    }
+    lws_sul_schedule(g_ws_context->context, 0, sul, tci_ws_wake_cb,
+                     10 * (LWS_USEC_PER_SEC / 1000));
+}
+
+static void tci_ws_arm_wake(struct lws_context *context)
+{
+    if (!context) {
+        return;
+    }
+    lws_sul_schedule(context, 0, &g_ws_wake, tci_ws_wake_cb,
+                     10 * (LWS_USEC_PER_SEC / 1000));
+}
+
+static void tci_ws_disarm_wake(void)
+{
+    lws_sul_cancel(&g_ws_wake);
+}
 static tci_tcp_context_t *g_tcp_context = NULL;
 static FILE *g_training_fp = NULL;
 static int g_training_mode = 0;
@@ -859,6 +890,7 @@ static int tci_ws_connect(tci_client_t *client) {
             g_ws_context = NULL;
             return -1;
         }
+        tci_ws_arm_wake(g_ws_context->context);
 
         memset(&ccinfo, 0, sizeof(ccinfo));
         ccinfo.context = g_ws_context->context;
@@ -874,6 +906,7 @@ static int tci_ws_connect(tci_client_t *client) {
         if (!g_ws_context->wsi) {
             CONN_DBG("FAILED: lws_client_connect_via_info returned NULL for %s:%d", client->host, client->port);
             LOG_ERROR("Failed to initiate WebSocket connection to %s:%d", client->host, client->port);
+            tci_ws_disarm_wake();
             lws_context_destroy(g_ws_context->context);
             free(g_ws_context->rx_buffer);
             free(g_ws_context);
@@ -899,6 +932,7 @@ static int tci_ws_connect(tci_client_t *client) {
                 CONN_DBG("FAILED: WebSocket connection timeout to %s:%d", client->host, client->port);
             }
             LOG_ERROR("WebSocket connection timeout");
+            tci_ws_disarm_wake();
             lws_context_destroy(g_ws_context->context);
             free(g_ws_context->rx_buffer);
             free(g_ws_context);
@@ -1467,6 +1501,7 @@ void tci_client_disconnect(tci_client_t *client) {
     }
 
     if (g_ws_context) {
+        tci_ws_disarm_wake();
         if (g_ws_context->context) {
             lws_context_destroy(g_ws_context->context);
         }

@@ -6,6 +6,7 @@
 #include <QApplication>
 #include <QFont>
 #include <QMetaType>
+#include <cstdio>
 #include "mainwindow.h"
 
 /*
@@ -202,6 +203,14 @@ QScrollBar::handle:vertical {
 QScrollBar::handle:vertical:hover {
     background: #00aa00;
 }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0;
+    border: none;
+    background: none;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: none;
+}
 )";
 
 int main(int argc, char *argv[])
@@ -223,6 +232,10 @@ int main(int argc, char *argv[])
 
     MainWindow window;
     window.show();
+    window.raise();
+    window.activateWindow();
+    fprintf(stderr, "CW Skimmer is running. Close the window to return to the shell.\n");
+    fflush(stderr);
 
     return app.exec();
 }

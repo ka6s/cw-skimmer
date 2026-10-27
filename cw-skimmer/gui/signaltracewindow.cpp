@@ -646,7 +646,7 @@ SignalTraceWindow::SignalTraceWindow(QWidget *parent)
     , m_hasTarget(false)
     , m_frozen(false)
     , m_recording(false)
-    , m_afcEnabled(true)
+    , m_afcEnabled(false)
     , m_afcLocked(false)
     , m_keyIsHigh(false)
     , m_baseOffsetHz(0.0f)
@@ -763,9 +763,9 @@ SignalTraceWindow::SignalTraceWindow(QWidget *parent)
         "Place the red line in the gap between the noise and the CW marks,\n"
         "above the grass and below the dit and dah tops. Uncheck to set it by hand.");
 
-    /* AFC: peak-lock strongest tone near click (handles ±few hundred Hz mark error) */
+    /* AFC starts off so a click stays where it was put. */
     m_afcCheck = new QCheckBox("AFC peak-lock", this);
-    m_afcCheck->setChecked(true);
+    m_afcCheck->setChecked(false);
     m_afcCheck->setToolTip(
         "Track the strongest signal within the search window around the click.\n"
         "Slews the listen frequency to peak the CW envelope (holds during key-up).");
@@ -953,6 +953,24 @@ void SignalTraceWindow::setTarget(float freqOffsetHz, float absFreqHz, float bin
     }
     m_capture.clear();
     m_clock.restart();
+    updateTitleAndLabels();
+}
+
+void SignalTraceWindow::slideTarget(float freqOffsetHz, float absFreqHz)
+{
+    if (!m_hasTarget || m_frozen) {
+        return;
+    }
+    const float delta = freqOffsetHz - m_offsetHz;
+    if (std::fabs(delta) < 0.5f) {
+        m_absFreqHz = absFreqHz;
+        return;
+    }
+    m_offsetHz = freqOffsetHz;
+    m_baseOffsetHz += delta;
+    m_baseAbsHz += delta;
+    m_absFreqHz = absFreqHz;
+    m_afcLockHz += delta;
     updateTitleAndLabels();
 }
 

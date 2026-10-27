@@ -25,10 +25,18 @@ typedef struct {
     int spectrum_span_hz;
     /* TCI binary stream: "iq" (complex baseband) or "audio" (demod L/R). */
     char tci_stream_mode[16];
+    /* 1 when the radio conjugates TCI IQ (deskHPSDR default). The dial
+     * then moves with the picture offset. 0 keeps center minus that offset. */
+    int iq_conjugate;
     /* Spectrum slices decoded beside the waterfall (one per 1 kHz, up to 48). */
     int multi_decode_channels;
     /* Offline TCI training stream. Empty string uses the live radio. */
     char training_file[512];
+    /* CW keyboard: "tci" (cw_macros) or "ky" (Kenwood TS-2000 KY on cat_port). */
+    char cw_send[8];
+    int cw_wpm;
+    char cat_host[256];
+    int cat_port;
 } config_t;
 
 /**

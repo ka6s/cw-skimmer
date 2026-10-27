@@ -18,6 +18,8 @@ Columns are stamped from the sample clock, one hop per column. Sharing one wall-
 
 The window shows 10 kHz. `gui/spectrumwidget.cpp` and `gui/decodewidget.cpp` share one vertical scrollbar. Value 0 is the highest 10 kHz. The view opens centered on 0 Hz IF. Wheel up moves toward higher frequency. A band of 10 kHz or less shows the whole span and disables the scrollbar.
 
+A vertical tune slider on the left of the waterfall uses the same IF offset as a waterfall click. Dragging previews the green marker. Mouse release, or a key change while the slider is not held, calls the click path. The range follows the spectrum span, starting at ±24 kHz, in 50 Hz steps. **Clear** on `DecodeWidget` emits `clearRequested`. The main window clears `MultiChannelDecoder` and then the widget, so the next column does not repaint the old text.
+
 **Tools → Spectrum: Narrow 3 kHz** is the finer experiment. **Wide 48 kHz** puts the normal waterfall back.
 
 ## One decoder per kilohertz
@@ -34,9 +36,19 @@ When the followed signal goes quiet and nothing else is in the slice, the lock a
 
 `gui/spectrummorsewindow.cpp` reads one waterfall column at the tuned frequency. White (key-down) is 16 dB above the noise. Once down, the key stays down until the bin falls below noise + 12.5 dB. Dit, dah, letter, and word come from the peaks of the run-length histogram. A character is published after six dahs of newer spectrum.
 
-The bottom pane uses the same decoder when **Decoder** says Spectrum. Threshold (`gui/thresholdmorsewindow.cpp`) is mark and space with auto WPM. Mask (`gui/maskmorsewindow.cpp`) draws dit and dah boxes on the signal trace. The button cycles only that bottom pane.
+The bottom pane opens on DeepCW. It uses the spectrum decoder when **Decoder** says Spectrum. Threshold (`gui/thresholdmorsewindow.cpp`) is mark and space with auto WPM. Mask (`gui/maskmorsewindow.cpp`) draws dit and dah boxes on the signal trace. Cwsk reads the radio samples at the clicked frequency. DeepCW (`gui/deepcwmorsewindow.cpp`, `src/deepcw_engine.cpp`) does that too, then shifts the tone to 800 Hz and resamples to 3200 Hz for the ONNX model in `models/model.onnx`. The stitcher follows `decode_morse.py` from the DeepCW engine. The button cycles only that bottom pane.
 
 A waterfall click calls `textForOffset` and `adoptText`, so the bottom panes start from the slice's current text. The side decoder is not cleared, and both keep receiving columns.
+
+## Radio tune and CW keyboard
+
+A waterfall click keeps the frequency of that row. It does not search for a nearby peak. `onSignalTraceRequested` queues the tune. On IQ the Hertz value is the waterfall center minus the picture offset. A station above the dial is drawn at a negative offset, and adding that offset walks the dial down through the bottom of the band. That same Hertz value is painted on the axis and in green on the line, in MHz, and the green text is not rewritten when the center report arrives. For receiver audio the Hertz value is the labeled frequency, center plus the offset. `src/radio_control.c` sends TCI `dds` and then `vfo` at that same value. deskHPSDR ignores `dds` and applies `vfo`. Thetis applies both, and the following `vfo` keeps the dial from being shifted a second time.
+
+The next spectrum columns call `followRadioTune`. The line stays on the click until the dial is within about 40 Hz of the command. After a short settle the picture origin is cleared. On IQ the clicked station is now the dial carrier, and deskHPSDR has shifted that carrier onto FFT bin 0. The green line and the decoder move to that bin, and the 10 kHz view follows it. The waterfall does not blank the center bins. It does not lock to a nearby peak, and it does not tune again. `bin/cw-skimmer.log` records `Click tune` and `Follow` with the power in bin 0. A click within about 30 Hz does not tune. Training playback does not tune. Fine-tune and AFC do not tune. AFC peak-lock starts off. DeepCW uses the same click and keeps the signal-trace window closed. The baseband tap stays armed, and the tone is retuned to bin 0.
+
+The program does not add a sidetone of its own. deskHPSDR already places the CW carrier on the IQ center, which is the sidetone in the headphones and the transmit frequency. Demodulated receiver audio keeps the clicked pitch.
+
+`gui/cwkeyboard.cpp` sits under the Morse group. Typed text is queued on the detection thread and sent as TCI `cw_macros`, or as Kenwood `KY` when `cw_send=ky` and `cat_port` is set. Stop sends `cw_macros_stop` and drops the local queue. The radio should already be in CW. No live radio was used to check this path.
 
 ## Color
 

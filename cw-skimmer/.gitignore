@@ -1,6 +1,9 @@
 # Build outputs
 bin/
 build/
+
+# Fetched by `make ort`. Headers and libonnxruntime.so.
+third_party/onnxruntime/
 *.o
 moc_*.cpp
 moc_*.o

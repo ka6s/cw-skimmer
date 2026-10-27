@@ -41,6 +41,13 @@ public:
     /** Retune the scope to a new IF offset / absolute frequency. Clears history. */
     void setTarget(float freqOffsetHz, float absFreqHz, float binWidthHz);
 
+    /**
+     * Move the listen offset with the radio center.
+     * Keeps the scope history, the fine-tune slider, and AFC lock.
+     * Does not emit tuningChanged.
+     */
+    void slideTarget(float freqOffsetHz, float absFreqHz);
+
     /** Effective IF offset (base click + fine tune slider). */
     float targetOffsetHz() const;
     float targetAbsFreqHz() const;

@@ -11,8 +11,14 @@
 #include "thresholdmorsewindow.h"
 #include "maskmorsewindow.h"
 #include "spectrummorsewindow.h"
+#include "cwskmorsewindow.h"
+#include "deepcwmorsewindow.h"
 #include "multichanneldecoder.h"
 #include "audiomonitor.h"
+#include "cwkeyboard.h"
+extern "C" {
+#include "logger.h"
+}
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -36,8 +42,12 @@
 #include <QDateTime>
 #include <QStackedWidget>
 #include <QGroupBox>
+#include <QLabel>
+#include <QLineEdit>
+#include <QSettings>
+#include <QShortcut>
+#include <QSlider>
 #include <algorithm>
-#include <cstdio>
 #include <cmath>
 
 namespace {
@@ -60,6 +70,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_spectrumWidget(nullptr)
     , m_decodeWidget(nullptr)
     , m_spectrumScroll(nullptr)
+    , m_tuneSlider(nullptr)
+    , m_tuneReadout(nullptr)
     , m_spectrumBins(0)
     , m_spectrumBinWidth(0.0f)
     , m_spectrumViewLow(0.0f)
@@ -69,6 +81,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_morseWindow(nullptr)
     , m_maskWindow(nullptr)
     , m_scopeWindow(nullptr)
+    , m_cwskWindow(nullptr)
+    , m_deepcwWindow(nullptr)
     , m_multiDecoder(nullptr)
     , m_morseBackendButton(nullptr)
     , m_tciStreamButton(nullptr)
@@ -77,7 +91,9 @@ MainWindow::MainWindow(QWidget *parent)
     , m_playTrainingButton(nullptr)
     , m_trainingPlayback(false)
     , m_audioMonitor(nullptr)
-    , m_morseBackend(MorseDecoderBackend::Spectrum)
+    , m_morseBackend(MorseDecoderBackend::DeepCw)
+    , m_cwskRetune(true)
+    , m_deepcwRetune(true)
     , m_tciStreamMode(TciStreamMode::IQ)
     , m_workerThread(nullptr)
     , m_worker(nullptr)
@@ -100,7 +116,18 @@ MainWindow::MainWindow(QWidget *parent)
     , m_spectrumPeakCount(0)
     , m_lastCenterFreqHz(0.0f)
     , m_spectrumModeLabel(QStringLiteral("WIDE"))
+    , m_cwKeyboard(nullptr)
+    , m_radioTunePending(false)
+    , m_radioTuneIq(true)
+    , m_iqConjugate(false)
+    , m_radioTuneHz(0.0)
+    , m_radioTuneFromCenter(0.0)
+    , m_radioTunePicture(0.0f)
+    , m_radioTuneSettle(0)
 {
+    for (QLineEdit *&edit : m_fnKeyEdit) {
+        edit = nullptr;
+    }
     setWindowTitle("CW Skimmer");
     // Icon intentionally omitted (no embedded resources in current build)
     setGeometry(100, 100, 1200, 800);
@@ -127,6 +154,7 @@ void MainWindow::createUI()
     setCentralWidget(centralWidget);
 
     m_spectrumWidget = new SpectrumWidget();
+    syncSpectrumRfSign();
     m_decodeWidget = new DecodeWidget();
     m_multiDecoder = new MultiChannelDecoder(this);
     m_multiDecoder->setMaxActiveChannels(MultiChannelDecoder::kMaxChannels);
@@ -159,15 +187,64 @@ void MainWindow::createUI()
     auto *spectrumPane = new QWidget(centralWidget);
     auto *paneLayout = new QHBoxLayout(spectrumPane);
     paneLayout->setContentsMargins(0, 0, 0, 0);
-    paneLayout->setSpacing(0);
+    paneLayout->setSpacing(2);
+
+    auto *tuneColumn = new QWidget(spectrumPane);
+    auto *tuneLayout = new QVBoxLayout(tuneColumn);
+    tuneLayout->setContentsMargins(0, 0, 2, 40);
+    tuneLayout->setSpacing(0);
+    m_tuneReadout = new QLabel(QStringLiteral("Tune"), tuneColumn);
+    m_tuneReadout->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
+    m_tuneReadout->setFixedHeight(20);
+    m_tuneReadout->setMinimumWidth(76);
+    m_tuneReadout->setStyleSheet(
+        "color: #d0d0d0; background: #1a1a1a; font-family: 'Courier New', monospace; "
+        "font-size: 11px; padding: 0 2px;");
+    m_tuneSlider = new QSlider(Qt::Vertical, tuneColumn);
+    m_tuneSlider->setObjectName(QStringLiteral("spectrumTune"));
+    m_tuneSlider->setRange(-24000, 24000);
+    m_tuneSlider->setValue(0);
+    m_tuneSlider->setSingleStep(50);
+    m_tuneSlider->setPageStep(500);
+    m_tuneSlider->setTracking(true);
+    m_tuneSlider->setToolTip(
+        QStringLiteral(
+            "Marks the selected signal. That frequency is the center of the\n"
+            "48 kHz spectrum and the frequency the radio will transmit.\n"
+            "Dragging this slider does not retune and does not stop the decoder.\n"
+            "The bar on the right moves the view across the spectrum."));
+    m_tuneSlider->setStyleSheet(
+        "QSlider::groove:vertical { background: #2a2a2a; width: 6px; border-radius: 3px; }"
+        "QSlider::handle:vertical { background: #00ff78; height: 16px; margin: 0 -5px; "
+        "border-radius: 3px; }"
+        "QSlider::add-page:vertical { background: #1d4a32; border-radius: 3px; }"
+        "QSlider::sub-page:vertical { background: #3a3a3a; border-radius: 3px; }");
+    tuneLayout->addWidget(m_tuneReadout, 0);
+    tuneLayout->addWidget(m_tuneSlider, 1);
+    paneLayout->addWidget(tuneColumn, 0);
+
     paneLayout->addWidget(m_spectrumWidget, 1);
     paneLayout->addWidget(m_decodeWidget, 0);
     m_spectrumScroll = new QScrollBar(Qt::Vertical, spectrumPane);
     m_spectrumScroll->setObjectName(QStringLiteral("spectrumScroll"));
     m_spectrumScroll->setRange(0, 0);
     m_spectrumScroll->setEnabled(false);
+    m_spectrumScroll->setFixedWidth(16);
+    /* A partial scrollbar style leaves the handle with no groove, so it
+     * cannot move even after the range is set. */
+    m_spectrumScroll->setStyleSheet(
+        "QScrollBar:vertical { background: #2a2a2a; width: 16px; margin: 0; }"
+        "QScrollBar::handle:vertical { background: #d0d0d0; min-height: 28px; "
+        "border-radius: 4px; }"
+        "QScrollBar::handle:vertical:hover { background: #00ff78; }"
+        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical "
+        "{ height: 0; border: none; background: none; }"
+        "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical "
+        "{ background: none; }");
     m_spectrumScroll->setToolTip(
-        QStringLiteral("Scrolls the 10 kHz spectrum window and the copy beside it together."));
+        QStringLiteral(
+            "Moves the 10 kHz window across the full spectrum (48 kHz of IQ).\n"
+            "It does not change the selected signal, the decoder, or the transmit frequency."));
     paneLayout->addWidget(m_spectrumScroll, 0);
     connect(m_spectrumScroll, &QScrollBar::valueChanged, this, [this](int) {
         applySpectrumView();
@@ -192,6 +269,37 @@ void MainWindow::createUI()
                                                  : std::min(-1, deltaY / 120);
                 m_spectrumScroll->setValue(m_spectrumScroll->value() - notches * step);
             });
+    connect(m_decodeWidget, &DecodeWidget::clearRequested, this, [this]() {
+        if (m_multiDecoder) {
+            m_multiDecoder->clear();
+        }
+        if (m_decodeWidget) {
+            m_decodeWidget->clear();
+        }
+    });
+    connect(m_tuneSlider, &QSlider::valueChanged, this, [this](int hz) {
+        /* The handle is the selected transmit frequency. A drag or a key
+         * press must not move the radio, the green line, or the decoder. */
+        if (tuneSliderHeld()) {
+            return;
+        }
+        const float keep = (m_traceWindow && m_traceWindow->hasTarget())
+                               ? traceDisplayHz()
+                               : 0.0f;
+        const int keepHz = static_cast<int>(std::lround(keep));
+        if (hz != keepHz) {
+            syncTuneSlider(keep);
+            return;
+        }
+        updateTuneReadout(static_cast<float>(hz));
+        updateStatusBar();
+    });
+    connect(m_tuneSlider, &QSlider::sliderReleased, this, [this]() {
+        const float keep = (m_traceWindow && m_traceWindow->hasTarget())
+                               ? traceDisplayHz()
+                               : 0.0f;
+        syncTuneSlider(keep);
+    });
 
     auto *spectrumColumn = new QWidget(centralWidget);
     auto *spectrumColumnLayout = new QVBoxLayout(spectrumColumn);
@@ -211,10 +319,15 @@ void MainWindow::createUI()
     m_morseWindow = new ThresholdMorseWindow(m_morseStack);
     m_maskWindow = new MaskMorseWindow(m_morseStack);
     m_scopeWindow = new SpectrumMorseWindow(m_morseStack);
+    m_cwskWindow = new CwskMorseWindow(m_morseStack);
+    m_deepcwWindow = new DeepcwMorseWindow(m_morseStack);
     m_morseStack->addWidget(m_morseWindow);
     m_morseStack->addWidget(m_maskWindow);
     m_morseStack->addWidget(m_scopeWindow);
-    m_morseStack->setCurrentWidget(m_scopeWindow);
+    m_morseStack->addWidget(m_cwskWindow);
+    m_morseStack->addWidget(m_deepcwWindow);
+    m_morseStack->setCurrentWidget(m_deepcwWindow);
+    m_deepcwWindow->warm();
 
     /* Dit/dah boxes live on the Signal Trace scope, not a second panel. */
     connect(m_maskWindow, &MaskMorseWindow::maskOverlayChanged, this,
@@ -234,9 +347,44 @@ void MainWindow::createUI()
     morseBoxLayout->setContentsMargins(4, 8, 4, 4);
     morseBoxLayout->addWidget(m_morseStack);
 
+    auto *fnRow = new QWidget(centralWidget);
+    auto *fnLayout = new QHBoxLayout(fnRow);
+    fnLayout->setContentsMargins(0, 0, 0, 0);
+    fnLayout->setSpacing(4);
+    for (int i = 0; i < 5; ++i) {
+        const QString name = QStringLiteral("F%1").arg(i + 1);
+        auto *button = new QPushButton(name, fnRow);
+        button->setObjectName(QStringLiteral("fnKey%1").arg(i + 1));
+        button->setFixedWidth(40);
+        button->setToolTip(QStringLiteral("Send the %1 text").arg(name));
+        m_fnKeyEdit[i] = new QLineEdit(fnRow);
+        m_fnKeyEdit[i]->setObjectName(QStringLiteral("fnText%1").arg(i + 1));
+        m_fnKeyEdit[i]->setPlaceholderText(name);
+        m_fnKeyEdit[i]->setToolTip(
+            QStringLiteral("Text sent when %1 is pressed.").arg(name));
+        fnLayout->addWidget(button, 0);
+        fnLayout->addWidget(m_fnKeyEdit[i], 1);
+        connect(button, &QPushButton::clicked, this, [this, i]() { sendFunctionKey(i); });
+        auto *shortcut = new QShortcut(QKeySequence(Qt::Key_F1 + i), this);
+        shortcut->setContext(Qt::WindowShortcut);
+        connect(shortcut, &QShortcut::activated, this, [this, i]() { sendFunctionKey(i); });
+        connect(m_fnKeyEdit[i], &QLineEdit::editingFinished, this, [this]() {
+            saveFunctionKeys();
+        });
+    }
+    loadFunctionKeys();
+
+    auto *cwBox = new QGroupBox(QStringLiteral("CW Keyboard"), centralWidget);
+    auto *cwBoxLayout = new QVBoxLayout(cwBox);
+    cwBoxLayout->setContentsMargins(4, 8, 4, 4);
+    m_cwKeyboard = new CwKeyboard(cwBox);
+    cwBoxLayout->addWidget(m_cwKeyboard);
+
     QVBoxLayout *mainLayout = new QVBoxLayout(centralWidget);
     mainLayout->addWidget(spectrumRow, 3);
     mainLayout->addWidget(morseBox, 2);
+    mainLayout->addWidget(fnRow, 0);
+    mainLayout->addWidget(cwBox, 0);
     centralWidget->setLayout(mainLayout);
 }
 
@@ -367,6 +515,8 @@ void MainWindow::createToolBar()
         "  Threshold — mark/space on the signal trace\n"
         "  Mask — dit/dah boxes on the signal trace\n"
         "  Spectrum — white/black runs on the waterfall, copied 6 dahs behind\n"
+        "  Cwsk — channel decoder on the selected signal's samples\n"
+        "  DeepCW — neural decoder on that signal as 800 Hz audio\n"
         "Beside the waterfall, each 1 kHz slice has its own Spectrum decoder\n"
         "and follows the strongest signal in that slice.\n"
         "Click one on the waterfall to copy its text into the Morse Decoder\n"
@@ -426,6 +576,11 @@ void MainWindow::initializeWorker()
     m_worker->setConfig(QStringLiteral("spectrum_span_hz"), QStringLiteral("0"));
     m_spectrumModeLabel = QStringLiteral("WIDE");
     applyTciStreamMode();
+    {
+        bool conjOk = false;
+        const int conj = m_worker->configValue(QStringLiteral("iq_conjugate")).toInt(&conjOk);
+        m_iqConjugate = conjOk && conj != 0;
+    }
 
     if (m_multiDecoder) {
         bool channelsOk = false;
@@ -441,6 +596,30 @@ void MainWindow::initializeWorker()
         setTrainingFile(configuredTraining);
     }
 
+    if (m_cwKeyboard) {
+        bool wpmOk = false;
+        const int configuredWpm = m_worker->configValue(QStringLiteral("cw_wpm")).toInt(&wpmOk);
+        if (wpmOk && configuredWpm > 0) {
+            m_cwKeyboard->setWpm(configuredWpm);
+        }
+        connect(m_cwKeyboard, &CwKeyboard::textReady, this, [this](const QString &text) {
+            if (m_worker) {
+                m_worker->cwSend(text);
+            }
+        });
+        connect(m_cwKeyboard, &CwKeyboard::stopRequested, this, [this]() {
+            if (m_worker) {
+                m_worker->cwStop();
+            }
+        });
+        connect(m_cwKeyboard, &CwKeyboard::wpmChanged, this, [this](int wpm) {
+            if (m_worker) {
+                m_worker->setCwWpm(wpm);
+            }
+        });
+        syncCwKeyboard();
+    }
+
     // Connect worker signals
     connect(m_worker, &DetectorWorker::signalDetected, this, &MainWindow::onSignalDetected);
     connect(m_worker, &DetectorWorker::spotReported, this, &MainWindow::onSpotReported);
@@ -449,6 +628,9 @@ void MainWindow::initializeWorker()
             Qt::QueuedConnection);
     connect(m_worker, &DetectorWorker::decodeUpdated, this, &MainWindow::onDecodeUpdated,
             Qt::QueuedConnection);
+    connect(m_worker, &DetectorWorker::basebandReady, this, &MainWindow::onBasebandReady,
+            Qt::QueuedConnection);
+    syncBasebandTap();
 
     connect(m_worker, &DetectorWorker::logMessage, this, &MainWindow::onLogMessage);
     connect(m_worker, &DetectorWorker::statusChanged, this, &MainWindow::onWorkerStatusChanged);
@@ -493,8 +675,9 @@ void MainWindow::ensureTraceWindow()
             this, &MainWindow::onPlaybackFinished);
     connect(m_traceWindow, &SignalTraceWindow::afcOffsetChanged,
             this, [this](float offsetHz) {
-                if (m_spectrumWidget) {
-                    m_spectrumWidget->setTraceOffsetHz(offsetHz);
+                /* A held tune drag owns the green line until the slider is released. */
+                if (!tuneSliderHeld()) {
+                    applyTraceMarker(offsetHz);
                 }
                 updateMonitorChannel();
             });
@@ -509,7 +692,7 @@ void MainWindow::ensureMorsePanels()
     /* Panels are created in createUI(); keep target labels current. */
     if (m_traceWindow && m_traceWindow->hasTarget()) {
         const QString label =
-            QString("IF %1 Hz").arg(m_traceWindow->targetOffsetHz(), 0, 'f', 0);
+            QString("IF %1 Hz").arg(traceDisplayHz(), 0, 'f', 0);
         if (m_morseWindow) {
             m_morseWindow->setThresholdDb(m_traceWindow->thresholdDb());
             m_morseWindow->setTargetLabel(label);
@@ -534,6 +717,16 @@ void MainWindow::updateMorseBackendButton()
         m_morseBackendButton->setText(QStringLiteral("Decoder: Spectrum"));
         m_morseBackendButton->setStyleSheet(
             "QPushButton { background: #3a3a3a; color: #f4f4f4; font-weight: bold; "
+            "padding: 4px 10px; }");
+    } else if (m_morseBackend == MorseDecoderBackend::Cwsk) {
+        m_morseBackendButton->setText(QStringLiteral("Decoder: Cwsk"));
+        m_morseBackendButton->setStyleSheet(
+            "QPushButton { background: #1a4a5a; color: #d6f4ff; font-weight: bold; "
+            "padding: 4px 10px; }");
+    } else if (m_morseBackend == MorseDecoderBackend::DeepCw) {
+        m_morseBackendButton->setText(QStringLiteral("Decoder: DeepCW"));
+        m_morseBackendButton->setStyleSheet(
+            "QPushButton { background: #1a3a2a; color: #d8ffe8; font-weight: bold; "
             "padding: 4px 10px; }");
     } else {
         m_morseBackendButton->setText(QStringLiteral("Decoder: Threshold"));
@@ -589,8 +782,12 @@ void MainWindow::onToggleTciStreamMode()
     }
     updateTciStreamButton();
     applyTciStreamMode();
+    syncSpectrumRfSign();
     if (m_spectrumWidget) {
         m_spectrumWidget->clear();
+    }
+    if (m_decodeWidget) {
+        m_decodeWidget->setPictureOriginHz(0.0f);
     }
     updateStatusBar();
 }
@@ -608,6 +805,18 @@ void MainWindow::showActiveMorsePanel()
     if (m_morseBackend == MorseDecoderBackend::Spectrum) {
         if (m_scopeWindow && m_morseStack) {
             m_morseStack->setCurrentWidget(m_scopeWindow);
+        }
+        return;
+    }
+    if (m_morseBackend == MorseDecoderBackend::Cwsk) {
+        if (m_cwskWindow && m_morseStack) {
+            m_morseStack->setCurrentWidget(m_cwskWindow);
+        }
+        return;
+    }
+    if (m_morseBackend == MorseDecoderBackend::DeepCw) {
+        if (m_deepcwWindow && m_morseStack) {
+            m_morseStack->setCurrentWidget(m_deepcwWindow);
         }
         return;
     }
@@ -647,13 +856,15 @@ void MainWindow::feedTraceFromColumns(const QVector<QVector<float>> &columns, fl
         lastOffset = m_traceWindow->processSpectrumColumn(col, binWidth, noise);
     }
 
-    if (m_spectrumWidget && m_traceWindow->afcEnabled()) {
-        m_spectrumWidget->setTraceOffsetHz(lastOffset);
+    if (m_spectrumWidget && m_traceWindow->afcEnabled() && !tuneSliderHeld()) {
+        applyTraceMarker(lastOffset);
     }
+    updateStatusBar();
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    saveFunctionKeys();
     m_freezeDisplay = true;
     if (m_worker) {
         QMetaObject::invokeMethod(m_worker, "stop", Qt::BlockingQueuedConnection);
@@ -708,6 +919,11 @@ void MainWindow::stopDetection(const QString &reason)
     m_freezeDisplay = true;
     m_isRunning = false;
     m_isConnected = false;
+    m_radioTunePending = false;
+    if (m_worker) {
+        m_worker->cwStop();
+    }
+    syncCwKeyboard();
     /* Drop the speaker before flushing events. Deleting it while its
      * backend still has queued notifications crashes after a long run. */
     if (m_audioMonitor) {
@@ -782,6 +998,7 @@ void MainWindow::onClearClicked()
         m_spectrumWidget->clear();
     }
     if (m_decodeWidget) {
+        m_decodeWidget->setPictureOriginHz(0.0f);
         m_decodeWidget->clear();
     }
     if (m_multiDecoder) {
@@ -796,6 +1013,12 @@ void MainWindow::onClearClicked()
     if (m_scopeWindow) {
         m_scopeWindow->clearDecode();
         m_scopeWindow->resetTiming();
+    }
+    if (m_cwskWindow) {
+        m_cwskWindow->clearDecode();
+    }
+    if (m_deepcwWindow) {
+        m_deepcwWindow->clearDecode();
     }
 }
 
@@ -824,12 +1047,22 @@ void MainWindow::onSpotReported(QString callsign, float frequency, float snr, fl
 void MainWindow::onStatsUpdated(int /*numSignals*/, float /*noiseFloor*/, float avgPeakSnr,
                                  float peakSnr, int spectrumPeakCount, int bufferFill,
                                  bool connected, int /*samplesProcessed*/, float cpuUsage,
-                                 int queueSize)
+                                 int queueSize, bool audioOnly)
 {
     if (m_freezeDisplay) {
         return;
     }
     m_isConnected = connected;
+    const TciStreamMode live = audioOnly ? TciStreamMode::Audio : TciStreamMode::IQ;
+    if (live != m_tciStreamMode) {
+        /* The radio accepted audio_start after iq_start produced no samples.
+         * Match the tune math to that stream. Do not resubscribe.
+         * Drop the saved scroll so the next column opens on this stream. */
+        m_tciStreamMode = live;
+        m_spectrumViewSet = false;
+        updateTciStreamButton();
+        syncSpectrumRfSign();
+    }
     m_bufferFill = bufferFill;
     m_cpuUsage = cpuUsage;
     m_queueSize = queueSize;
@@ -871,6 +1104,9 @@ void MainWindow::onSpectrumColumnsReady(QVector<QVector<float>> columns, float c
     syncSpectrumScroll(m_spectrumBins, m_spectrumBinWidth);
     if (m_spectrumWidget) {
         m_spectrumWidget->appendSpectrumColumns(columns, centerFreq, binWidth);
+    }
+    if (m_tuneSlider) {
+        updateTuneReadout(static_cast<float>(m_tuneSlider->value()));
     }
     /*
      * Each 1 kHz slice keeps its own Spectrum decoder.
@@ -915,9 +1151,10 @@ void MainWindow::onSpectrumColumnsReady(QVector<QVector<float>> columns, float c
         }
         if (m_traceWindow) {
             m_scopeWindow->setTargetLabel(
-                QString("IF %1 Hz").arg(offsetHz, 0, 'f', 0));
+                QString("IF %1 Hz").arg(traceDisplayHz(), 0, 'f', 0));
         }
     }
+    followRadioTune(centerFreq, columns.last(), binWidth);
 }
 
 void MainWindow::onSpectrumModeWide()
@@ -928,6 +1165,9 @@ void MainWindow::onSpectrumModeWide()
     m_spectrumModeLabel = QStringLiteral("WIDE");
     if (m_spectrumWidget) {
         m_spectrumWidget->clear();
+    }
+    if (m_decodeWidget) {
+        m_decodeWidget->setPictureOriginHz(0.0f);
     }
     onLogMessage("Spectrum mode → WIDE 48 kHz (default workable path, ~47 Hz bins)", 1);
     updateStatusBar();
@@ -941,6 +1181,9 @@ void MainWindow::onSpectrumModeNarrow3k()
     m_spectrumModeLabel = QStringLiteral("NARROW 3k");
     if (m_spectrumWidget) {
         m_spectrumWidget->clear();
+    }
+    if (m_decodeWidget) {
+        m_decodeWidget->setPictureOriginHz(0.0f);
     }
     onLogMessage(
         "Spectrum mode → NARROW 3 kHz experiment (±1.5 kHz around VFO, ~12 Hz bins, "
@@ -986,6 +1229,9 @@ void MainWindow::onWorkerStatusChanged(bool running)
     if (running) {
         m_freezeDisplay = false;
         updateMonitorChannel();
+        if (m_cwKeyboard && m_worker && !m_trainingPlayback) {
+            m_worker->setCwWpm(m_cwKeyboard->wpm());
+        }
         updateStatusBar();
     } else {
         if (m_trainingPlayback && !m_freezeDisplay) {
@@ -997,6 +1243,7 @@ void MainWindow::onWorkerStatusChanged(bool running)
             updateStatusBar();
         }
     }
+    syncCwKeyboard();
 }
 
 void MainWindow::onWorkerError(QString error)
@@ -1013,49 +1260,78 @@ void MainWindow::onSignalTraceRequested(float freqOffsetHz, float absFreqHz)
     }
 
     const float binWidth = m_spectrumWidget->binWidth();
-    m_traceWindow->setTarget(freqOffsetHz, absFreqHz, binWidth);
+    /* The click and the slider are display Hz. Power and pitch use the FFT bin. */
+    const float fftHz = m_spectrumWidget->fftHzForDisplay(freqOffsetHz);
+    m_traceWindow->setTarget(fftHz, absFreqHz, binWidth);
 
     /* Seed with waterfall history so the scope isn't empty on open */
     const QVector<float> history =
-        m_spectrumWidget->powerHistoryAtOffset(freqOffsetHz, m_traceWindow->halfBins());
+        m_spectrumWidget->powerHistoryAtOffset(fftHz, m_traceWindow->halfBins());
     m_traceWindow->seedHistory(history, m_spectrumWidget->latestNoiseFloorDb());
 
-    m_traceWindow->show();
-    m_traceWindow->raise();
-    m_traceWindow->activateWindow();
+    /* DeepCW still uses this target. hide() does not emit closed(). */
+    if (m_morseBackend == MorseDecoderBackend::DeepCw) {
+        m_traceWindow->hide();
+    } else {
+        m_traceWindow->show();
+        m_traceWindow->raise();
+        m_traceWindow->activateWindow();
+    }
 
-    const QString sideCopy = m_multiDecoder ? m_multiDecoder->textForOffset(freqOffsetHz)
+    const QString sideCopy = m_multiDecoder ? m_multiDecoder->textForOffset(fftHz)
                                             : QString();
     if (m_morseWindow) {
         m_morseWindow->adoptText(sideCopy);
         m_morseWindow->setThresholdDb(m_traceWindow->thresholdDb());
         m_morseWindow->setTargetLabel(
-            QString("IF %1 Hz").arg(m_traceWindow->targetOffsetHz(), 0, 'f', 0));
+            QString("IF %1 Hz").arg(traceDisplayHz(), 0, 'f', 0));
     }
     if (m_maskWindow) {
         m_maskWindow->adoptText(sideCopy);
         m_maskWindow->setTargetLabel(
-            QString("IF %1 Hz").arg(m_traceWindow->targetOffsetHz(), 0, 'f', 0));
+            QString("IF %1 Hz").arg(traceDisplayHz(), 0, 'f', 0));
     }
     if (m_scopeWindow) {
         m_scopeWindow->adoptText(sideCopy);
         m_scopeWindow->setTargetLabel(
-            QString("IF %1 Hz").arg(m_traceWindow->targetOffsetHz(), 0, 'f', 0));
+            QString("IF %1 Hz").arg(traceDisplayHz(), 0, 'f', 0));
     }
+    if (m_cwskWindow) {
+        m_cwskWindow->adoptText(sideCopy);
+        m_cwskWindow->setTargetLabel(
+            QString("IF %1 Hz").arg(traceDisplayHz(), 0, 'f', 0));
+    }
+    if (m_deepcwWindow) {
+        m_deepcwWindow->adoptText(sideCopy);
+        m_deepcwWindow->setTargetLabel(
+            QString("IF %1 Hz").arg(traceDisplayHz(), 0, 'f', 0));
+    }
+    m_cwskRetune = true;
+    m_deepcwRetune = true;
+    syncBasebandTap();
+    syncTuneSlider(freqOffsetHz);
 
     onLogMessage(QString("Signal trace: offset %1 Hz (RF %2 Hz)")
                      .arg(freqOffsetHz, 0, 'f', 1)
                      .arg(absFreqHz, 0, 'f', 0),
                  1);
     updateMonitorChannel();
+    updateStatusBar();
+    /* Put the selection in the middle of the spectrum, then move the radio
+     * so that frequency becomes the center of the 48 kHz IQ window. */
+    centerSpectrumOn(freqOffsetHz);
+    requestRadioTune(freqOffsetHz);
 }
 
 void MainWindow::onTraceWindowClosed()
 {
+    m_radioTunePending = false;
     if (m_spectrumWidget) {
         m_spectrumWidget->clearTraceSelection();
     }
+    syncBasebandTap();
     updateMonitorChannel();
+    updateStatusBar();
 }
 
 void MainWindow::onTraceTuningChanged()
@@ -1065,21 +1341,34 @@ void MainWindow::onTraceTuningChanged()
     if (m_morseWindow && m_traceWindow) {
         m_morseWindow->resetTiming();
         m_morseWindow->setTargetLabel(
-            QString("IF %1 Hz").arg(m_traceWindow->targetOffsetHz(), 0, 'f', 0));
+            QString("IF %1 Hz").arg(traceDisplayHz(), 0, 'f', 0));
     }
     if (m_maskWindow && m_traceWindow) {
         m_maskWindow->resetTiming();
         m_maskWindow->setTargetLabel(
-            QString("IF %1 Hz").arg(m_traceWindow->targetOffsetHz(), 0, 'f', 0));
+            QString("IF %1 Hz").arg(traceDisplayHz(), 0, 'f', 0));
     }
+    if (m_cwskWindow && m_traceWindow) {
+        m_cwskWindow->resetTiming();
+        m_cwskWindow->setTargetLabel(
+            QString("IF %1 Hz").arg(traceDisplayHz(), 0, 'f', 0));
+    }
+    if (m_deepcwWindow && m_traceWindow) {
+        m_deepcwWindow->resetTiming();
+        m_deepcwWindow->setTargetLabel(
+            QString("IF %1 Hz").arg(traceDisplayHz(), 0, 'f', 0));
+    }
+    m_cwskRetune = true;
+    m_deepcwRetune = true;
     if (m_multiDecoder && m_traceWindow) {
         m_multiDecoder->setHalfBins(m_traceWindow->halfBins());
     }
-    if (m_spectrumWidget && m_traceWindow && m_traceWindow->hasTarget()) {
-        /* Keep waterfall green marker aligned with fine-tuned offset */
-        m_spectrumWidget->setTraceOffsetHz(m_traceWindow->targetOffsetHz());
+    if (m_spectrumWidget && m_traceWindow && m_traceWindow->hasTarget() && !tuneSliderHeld()) {
+        /* Fine-tune is an FFT bin. The line is drawn in display Hz. */
+        applyTraceMarker(m_traceWindow->targetOffsetHz());
     }
     updateMonitorChannel();
+    updateStatusBar();
 }
 
 void MainWindow::onTraceThresholdChanged(float thresholdDb)
@@ -1102,7 +1391,9 @@ void MainWindow::onTraceSampleReady(float powerDb, bool aboveThreshold, qint64 s
      * Single-signal scope → bottom Morse Decoder panel only.
      * CW Decode multi-channel path is fed from spectrum columns, not here.
      */
-    if (m_morseBackend == MorseDecoderBackend::Spectrum) {
+    if (m_morseBackend == MorseDecoderBackend::Spectrum
+        || m_morseBackend == MorseDecoderBackend::Cwsk
+        || m_morseBackend == MorseDecoderBackend::DeepCw) {
         return;
     }
     if (m_morseBackend == MorseDecoderBackend::Mask) {
@@ -1119,27 +1410,72 @@ void MainWindow::onTraceSampleReady(float powerDb, bool aboveThreshold, qint64 s
     m_morseWindow->feedSample(powerDb, aboveThreshold, sampleTimeMs);
 }
 
+int MainWindow::spectrumViewSpanHz(int fullSpanHz) const
+{
+    /*
+     * The IQ picture is the full span (48 kHz). The screen shows a slice of
+     * it so the scrollbar can travel the rest. A slice equal to the span
+     * sets the bar range to 0, and the frequency ticks then jump by about
+     * 12 kHz.
+     */
+    const int windowHz = 10000;
+    if (fullSpanHz <= windowHz) {
+        return std::max(1, fullSpanHz);
+    }
+    return windowHz;
+}
+
 void MainWindow::syncSpectrumScroll(int numBins, float binWidth)
 {
-    if (!m_spectrumScroll || numBins <= 1 || binWidth <= 0.0f) {
+    if (numBins <= 1 || binWidth <= 0.0f) {
+        return;
+    }
+    updateTuneSliderRange(numBins, binWidth);
+    if (!m_spectrumScroll) {
         return;
     }
     const int fullSpanHz = std::max(1, static_cast<int>(std::lround(numBins * binWidth)));
-    const int viewSpanHz = std::min(10000, fullSpanHz);
-    const int fullLowHz = -fullSpanHz / 2;
+    const int viewSpanHz = spectrumViewSpanHz(fullSpanHz);
+    const int fullLowHz = spectrumFullLowHz(fullSpanHz);
     const int maxScroll = std::max(0, fullSpanHz - viewSpanHz);
     const int maxLow = fullLowHz + maxScroll;
-    int viewLow = m_spectrumViewSet ? static_cast<int>(std::lround(m_spectrumViewLow))
-                                    : (-viewSpanHz / 2);
+    /* Open on the dial, the middle of the 48 kHz picture. */
+    int viewLow = -viewSpanHz / 2;
+    if (m_spectrumViewSet) {
+        viewLow = static_cast<int>(std::lround(m_spectrumViewLow));
+    }
     viewLow = std::max(fullLowHz, std::min(maxLow, viewLow));
     m_spectrumViewSet = true;
     m_spectrumScroll->setEnabled(maxScroll > 0);
-    m_spectrumScroll->blockSignals(true);
-    m_spectrumScroll->setRange(0, maxScroll);
-    m_spectrumScroll->setPageStep(std::max(1, viewSpanHz));
-    m_spectrumScroll->setSingleStep(std::max(1, viewSpanHz / 20));
-    m_spectrumScroll->setValue(maxLow - viewLow);
-    m_spectrumScroll->blockSignals(false);
+    /* A spectrum column arrives every ~20 ms. Rewriting the bar while it
+     * is held puts the thumb back and the view never follows the drag. */
+    if (!m_spectrumScroll->isSliderDown()) {
+        const int page = std::max(1, viewSpanHz);
+        const int value = maxLow - viewLow;
+        const bool same = m_spectrumScroll->minimum() == 0
+            && m_spectrumScroll->maximum() == maxScroll
+            && m_spectrumScroll->pageStep() == page
+            && m_spectrumScroll->value() == value;
+        if (!same) {
+            m_spectrumScroll->blockSignals(true);
+            m_spectrumScroll->setRange(0, maxScroll);
+            m_spectrumScroll->setPageStep(page);
+            m_spectrumScroll->setSingleStep(std::max(1, viewSpanHz / 20));
+            m_spectrumScroll->setValue(value);
+            m_spectrumScroll->blockSignals(false);
+        }
+    }
+    if (maxScroll > 0) {
+        static int loggedMax = -1;
+        if (loggedMax != maxScroll) {
+            loggedMax = maxScroll;
+            onLogMessage(QString("Spectrum window %1 kHz of %2 kHz (scrollbar travels %3 kHz)")
+                             .arg(viewSpanHz / 1000.0, 0, 'f', 1)
+                             .arg(fullSpanHz / 1000.0, 0, 'f', 1)
+                             .arg(maxScroll / 1000.0, 0, 'f', 1),
+                         1);
+        }
+    }
     applySpectrumView();
 }
 
@@ -1150,8 +1486,8 @@ void MainWindow::applySpectrumView()
     }
     const int fullSpanHz = std::max(1, static_cast<int>(std::lround(
                                             m_spectrumBins * m_spectrumBinWidth)));
-    const int viewSpanHz = std::min(10000, fullSpanHz);
-    const int fullLowHz = -fullSpanHz / 2;
+    const int viewSpanHz = spectrumViewSpanHz(fullSpanHz);
+    const int fullLowHz = spectrumFullLowHz(fullSpanHz);
     const int maxScroll = std::max(0, fullSpanHz - viewSpanHz);
     const int maxLow = fullLowHz + maxScroll;
     const int viewLow = maxLow - m_spectrumScroll->value();
@@ -1162,6 +1498,362 @@ void MainWindow::applySpectrumView()
     if (m_decodeWidget) {
         m_decodeWidget->setFrequencyView(m_spectrumViewLow, static_cast<float>(viewSpanHz));
     }
+}
+
+bool MainWindow::tuneSliderHeld() const
+{
+    return m_tuneSlider && m_tuneSlider->isSliderDown();
+}
+
+void MainWindow::updateTuneReadout(float offsetHz)
+{
+    if (!m_tuneReadout) {
+        return;
+    }
+    const float center = m_spectrumWidget ? m_spectrumWidget->centerFrequency() : 0.0f;
+    if (center < 1.0e5f) {
+        m_tuneReadout->setText(QStringLiteral("Tune"));
+        return;
+    }
+    const float mhz = m_spectrumWidget->rfHzForOffset(offsetHz) / 1.0e6f;
+    m_tuneReadout->setText(QString::number(static_cast<double>(mhz), 'f', 5));
+}
+
+void MainWindow::syncTuneSlider(float offsetHz)
+{
+    if (!m_tuneSlider || tuneSliderHeld()) {
+        return;
+    }
+    int hz = static_cast<int>(std::lround(offsetHz));
+    hz = std::max(m_tuneSlider->minimum(), std::min(m_tuneSlider->maximum(), hz));
+    m_tuneSlider->blockSignals(true);
+    m_tuneSlider->setValue(hz);
+    m_tuneSlider->blockSignals(false);
+    updateTuneReadout(static_cast<float>(hz));
+}
+
+void MainWindow::updateTuneSliderRange(int numBins, float binWidth)
+{
+    if (!m_tuneSlider || numBins <= 1 || binWidth <= 0.0f) {
+        return;
+    }
+    const int half = std::max(1, static_cast<int>(std::lround(
+                                     0.5 * static_cast<double>(numBins) * binWidth)));
+    if (m_tuneSlider->minimum() == -half && m_tuneSlider->maximum() == half) {
+        return;
+    }
+    const int value = std::max(-half, std::min(half, m_tuneSlider->value()));
+    m_tuneSlider->blockSignals(true);
+    m_tuneSlider->setRange(-half, half);
+    m_tuneSlider->setValue(value);
+    m_tuneSlider->blockSignals(false);
+    updateTuneReadout(static_cast<float>(m_tuneSlider->value()));
+}
+
+void MainWindow::revealTuneOffset(float offsetHz)
+{
+    if (!m_spectrumScroll || !m_spectrumScroll->isEnabled()) {
+        return;
+    }
+    if (m_spectrumBins <= 1 || m_spectrumBinWidth <= 0.0f) {
+        return;
+    }
+    const int fullSpanHz = std::max(1, static_cast<int>(std::lround(
+                                            static_cast<double>(m_spectrumBins) * m_spectrumBinWidth)));
+    const int viewSpanHz = spectrumViewSpanHz(fullSpanHz);
+    const int fullLowHz = spectrumFullLowHz(fullSpanHz);
+    const int maxScroll = std::max(0, fullSpanHz - viewSpanHz);
+    const int maxLow = fullLowHz + maxScroll;
+    const int viewLow = maxLow - m_spectrumScroll->value();
+    const int viewHigh = viewLow + viewSpanHz;
+    const int offset = static_cast<int>(std::lround(offsetHz));
+    if (offset >= viewLow && offset <= viewHigh) {
+        return;
+    }
+    const int targetLow = std::max(fullLowHz, std::min(maxLow, offset - viewSpanHz / 2));
+    m_spectrumScroll->setValue(maxLow - targetLow);
+}
+
+void MainWindow::commitTuneSlider()
+{
+    /* The tune slider does not call this. A drag must not retune the radio
+     * or move the decoder off the selected signal. */
+    if (!m_tuneSlider || !m_spectrumWidget) {
+        return;
+    }
+    const float offset = static_cast<float>(m_tuneSlider->value());
+    m_spectrumWidget->setTraceOffsetHz(offset);
+    /* DeepCW keeps a target with the trace window hidden. */
+    const bool deepcw = m_morseBackend == MorseDecoderBackend::DeepCw;
+    const bool sameTarget = m_traceWindow && m_traceWindow->hasTarget()
+        && (m_traceWindow->isVisible() || deepcw)
+        && std::fabs(m_spectrumWidget->displayHzForFft(m_traceWindow->targetOffsetHz())
+                     - offset) < 1.0f;
+    if (sameTarget) {
+        return;
+    }
+    onSignalTraceRequested(offset, m_spectrumWidget->rfHzForOffset(offset));
+    revealTuneOffset(offset);
+}
+
+double MainWindow::radioTuneHz(float pictureOffsetHz) const
+{
+    if (!m_spectrumWidget) {
+        return 0.0;
+    }
+    const double center = static_cast<double>(m_spectrumWidget->centerFrequency());
+    if (center < 1.0e5) {
+        return 0.0;
+    }
+    const bool iq = (m_tciStreamMode != TciStreamMode::Audio);
+    /* The IQ picture is mirrored. A station above the dial is drawn at a
+     * negative offset. Adding that offset walks the dial down through the
+     * bottom of the band. The carrier is the center minus the picture. */
+    const double target = iq ? (center - static_cast<double>(pictureOffsetHz))
+                             : (center + static_cast<double>(pictureOffsetHz));
+    return static_cast<double>(std::llround(target));
+}
+
+void MainWindow::syncSpectrumRfSign()
+{
+    if (!m_spectrumWidget) {
+        return;
+    }
+    const bool iq = (m_tciStreamMode != TciStreamMode::Audio);
+    m_spectrumWidget->setRfOffsetSign(iq ? -1 : 1);
+}
+
+void MainWindow::requestRadioTune(float pictureOffsetHz)
+{
+    const double tuned = radioTuneHz(pictureOffsetHz);
+    if (m_spectrumWidget && tuned >= 1.0e5) {
+        m_spectrumWidget->setTraceRadioHz(tuned);
+    }
+    if (std::fabs(pictureOffsetHz) < 30.0f) {
+        m_radioTunePending = false;
+        return;
+    }
+    if (!m_isRunning || m_trainingPlayback || !m_worker || !m_spectrumWidget) {
+        m_radioTunePending = false;
+        return;
+    }
+    if (tuned < 1.0e5) {
+        m_radioTunePending = false;
+        return;
+    }
+    const long long hz = static_cast<long long>(tuned);
+    const bool iq = (m_tciStreamMode != TciStreamMode::Audio);
+    const double center = static_cast<double>(m_spectrumWidget->centerFrequency());
+    if (m_worker->tuneHz(hz) != 0) {
+        m_radioTunePending = false;
+        onLogMessage(QString("Radio tune rejected for %1 Hz").arg(hz), 2);
+        return;
+    }
+    m_radioTunePending = true;
+    m_radioTuneIq = iq;
+    m_radioTuneHz = static_cast<double>(hz);
+    m_radioTuneFromCenter = center;
+    m_radioTunePicture = pictureOffsetHz;
+    m_radioTuneSettle = 0;
+    LOG_INFO("Click tune center=%.0f picture=%+.0f target=%lld conj=%d iq=%d",
+             center, static_cast<double>(pictureOffsetHz), hz,
+             m_iqConjugate ? 1 : 0, iq ? 1 : 0);
+    const QString how = !iq
+        ? QStringLiteral("audio, labeled frequency")
+        : QStringLiteral("IQ carrier, center minus the picture offset");
+    onLogMessage(QString("Radio tune %1 MHz (%2)")
+                     .arg(static_cast<double>(hz) / 1.0e6, 0, 'f', 6)
+                     .arg(how),
+                 1);
+}
+
+void MainWindow::refreshMorseLabels()
+{
+    if (!m_traceWindow || !m_traceWindow->hasTarget()) {
+        return;
+    }
+    const QString label =
+        QString("IF %1 Hz").arg(traceDisplayHz(), 0, 'f', 0);
+    if (m_morseWindow) {
+        m_morseWindow->setTargetLabel(label);
+    }
+    if (m_maskWindow) {
+        m_maskWindow->setTargetLabel(label);
+    }
+    if (m_scopeWindow) {
+        m_scopeWindow->setTargetLabel(label);
+    }
+    if (m_cwskWindow) {
+        m_cwskWindow->setTargetLabel(label);
+    }
+    if (m_deepcwWindow) {
+        m_deepcwWindow->setTargetLabel(label);
+    }
+}
+
+void MainWindow::followRadioTune(float newCenterHz, const QVector<float> &column, float binWidth)
+{
+    if (!m_radioTunePending || !m_traceWindow || !m_traceWindow->hasTarget()) {
+        return;
+    }
+    if (m_traceWindow->isFrozen() || m_traceWindow->isPlayingBack()) {
+        return;
+    }
+    if (newCenterHz < 1.0e5f || !m_spectrumWidget) {
+        return;
+    }
+
+    /* Leave the line on the click until the dial has actually arrived. */
+    const double center = static_cast<double>(newCenterHz);
+    if (std::fabs(center - m_radioTuneHz) >= 40.0) {
+        return;
+    }
+    if (m_radioTuneSettle < 8) {
+        ++m_radioTuneSettle;
+        return;
+    }
+
+    /*
+     * The dial has arrived. On IQ the oscillator moved with it, so the
+     * station that was clicked is now the dial carrier. deskHPSDR shifts
+     * CW IQ so that carrier is FFT bin 0: the sidetone in the headphones
+     * and the frequency the radio will transmit. Put the line and the
+     * decoder on that bin. Do not tune again. Demodulated audio is a
+     * pitched tone, so leave that target where the click put it.
+     */
+    if (!m_radioTuneIq) {
+        m_radioTunePending = false;
+        return;
+    }
+
+    m_spectrumWidget->setPictureOriginHz(0.0f);
+    if (m_decodeWidget) {
+        m_decodeWidget->setPictureOriginHz(0.0f);
+    }
+    const float power = SpectrumWidget::powerAtOffset(column, 0.0f, binWidth, 1);
+    m_traceWindow->setTarget(0.0f, static_cast<float>(m_radioTuneHz), binWidth);
+    m_cwskRetune = true;
+    m_deepcwRetune = true;
+    m_spectrumWidget->setTraceOffsetHz(0.0f);
+    m_spectrumWidget->setTraceRadioHz(m_radioTuneHz);
+    syncTuneSlider(0.0f);
+    centerSpectrumOn(0.0f);
+    refreshMorseLabels();
+    updateStatusBar();
+    LOG_INFO("Follow center %.0f target %.0f dial carrier bin 0 power %.1f dB",
+             center, m_radioTuneHz, static_cast<double>(power));
+    m_radioTunePending = false;
+}
+
+int MainWindow::spectrumFullLowHz(int fullSpanHz) const
+{
+    /* Display Hz. Zero is the picture origin, the center of the 48 kHz window. */
+    return -fullSpanHz / 2;
+}
+
+float MainWindow::traceDisplayHz() const
+{
+    if (!m_traceWindow || !m_traceWindow->hasTarget()) {
+        return 0.0f;
+    }
+    const float fft = m_traceWindow->targetOffsetHz();
+    if (!m_spectrumWidget) {
+        return fft;
+    }
+    return m_spectrumWidget->displayHzForFft(fft);
+}
+
+void MainWindow::applyTraceMarker(float fftHz)
+{
+    if (!m_spectrumWidget) {
+        return;
+    }
+    const float display = m_spectrumWidget->displayHzForFft(fftHz);
+    m_spectrumWidget->setTraceOffsetHz(display);
+    const double tuned = radioTuneHz(display);
+    if (tuned >= 1.0e5) {
+        m_spectrumWidget->setTraceRadioHz(tuned);
+    }
+    syncTuneSlider(display);
+}
+
+void MainWindow::centerSpectrumOn(float displayHz)
+{
+    if (m_spectrumBins <= 1 || m_spectrumBinWidth <= 0.0f) {
+        return;
+    }
+    const int fullSpanHz = std::max(1, static_cast<int>(std::lround(
+        static_cast<double>(m_spectrumBins) * static_cast<double>(m_spectrumBinWidth))));
+    const int viewSpanHz = spectrumViewSpanHz(fullSpanHz);
+    const int fullLowHz = spectrumFullLowHz(fullSpanHz);
+    const int maxScroll = std::max(0, fullSpanHz - viewSpanHz);
+    const int maxLow = fullLowHz + maxScroll;
+    const int targetLow = std::max(fullLowHz, std::min(
+        maxLow, static_cast<int>(std::lround(displayHz)) - viewSpanHz / 2));
+    m_spectrumViewLow = static_cast<float>(targetLow);
+    m_spectrumViewSet = true;
+    syncSpectrumScroll(m_spectrumBins, m_spectrumBinWidth);
+}
+
+QString MainWindow::cwTransportLabel() const
+{
+    const QString mode = m_worker ? m_worker->cwSendMode() : QStringLiteral("tci");
+    if (mode == QLatin1String("ky")) {
+        return QStringLiteral("TS-2000 KY");
+    }
+    return QStringLiteral("TCI cw_macros");
+}
+
+void MainWindow::sendFunctionKey(int index)
+{
+    if (index < 0 || index >= 5 || !m_fnKeyEdit[index] || !m_cwKeyboard) {
+        return;
+    }
+    m_cwKeyboard->sendImmediate(m_fnKeyEdit[index]->text());
+}
+
+void MainWindow::loadFunctionKeys()
+{
+    QSettings settings(QSettings::IniFormat, QSettings::UserScope,
+                       QStringLiteral("cw-skimmer"), QStringLiteral("cw-skimmer-gui"));
+    for (int i = 0; i < 5; ++i) {
+        if (!m_fnKeyEdit[i]) {
+            continue;
+        }
+        const QString key = QStringLiteral("functionKeys/F%1").arg(i + 1);
+        m_fnKeyEdit[i]->setText(settings.value(key).toString());
+    }
+}
+
+void MainWindow::saveFunctionKeys() const
+{
+    QSettings settings(QSettings::IniFormat, QSettings::UserScope,
+                       QStringLiteral("cw-skimmer"), QStringLiteral("cw-skimmer-gui"));
+    for (int i = 0; i < 5; ++i) {
+        if (!m_fnKeyEdit[i]) {
+            continue;
+        }
+        settings.setValue(QStringLiteral("functionKeys/F%1").arg(i + 1),
+                          m_fnKeyEdit[i]->text());
+    }
+}
+
+void MainWindow::syncCwKeyboard()
+{
+    if (!m_cwKeyboard) {
+        return;
+    }
+    m_cwKeyboard->setTransportLabel(cwTransportLabel());
+    if (m_isRunning && !m_trainingPlayback) {
+        m_cwKeyboard->setArmed(true, QString());
+        return;
+    }
+    if (m_trainingPlayback) {
+        m_cwKeyboard->setArmed(false,
+                               QStringLiteral("Training playback does not transmit"));
+        return;
+    }
+    m_cwKeyboard->setArmed(false, QStringLiteral("Start the radio to send CW"));
 }
 
 void MainWindow::onToggleMorseBackend()
@@ -1184,6 +1876,24 @@ void MainWindow::onToggleMorseBackend()
             "Morse backend → Spectrum (white trace on the waterfall, "
             "copied 6 dahs behind the leading edge).",
             1);
+    } else if (m_morseBackend == MorseDecoderBackend::Spectrum) {
+        m_morseBackend = MorseDecoderBackend::Cwsk;
+        m_cwskRetune = true;
+        onLogMessage(
+            "Morse backend → Cwsk (channel decoder on the selected signal).",
+            1);
+    } else if (m_morseBackend == MorseDecoderBackend::Cwsk) {
+        m_morseBackend = MorseDecoderBackend::DeepCw;
+        m_deepcwRetune = true;
+        if (m_traceWindow) {
+            m_traceWindow->hide();
+        }
+        if (m_deepcwWindow) {
+            m_deepcwWindow->warm();
+        }
+        onLogMessage(
+            "Morse backend → DeepCW (neural decoder, clicked signal as audio).",
+            1);
     } else {
         m_morseBackend = MorseDecoderBackend::Threshold;
         if (m_traceWindow) {
@@ -1192,7 +1902,85 @@ void MainWindow::onToggleMorseBackend()
         onLogMessage("Morse backend → Threshold (mark/space + Auto WPM).", 1);
     }
     updateMorseBackendButton();
+    syncBasebandTap();
     showActiveMorsePanel();
+}
+
+void MainWindow::syncBasebandTap()
+{
+    if (!m_worker) {
+        return;
+    }
+    const bool cwsk = m_morseBackend == MorseDecoderBackend::Cwsk;
+    const bool deepcw = m_morseBackend == MorseDecoderBackend::DeepCw;
+    const bool targeted = m_traceWindow && m_traceWindow->hasTarget();
+    /* DeepCW keeps the tap with the trace window hidden. Cwsk needs it open. */
+    const bool armed = targeted && (deepcw || (cwsk && m_traceWindow->isVisible()));
+    m_worker->setBasebandTap(armed);
+}
+
+double MainWindow::cwskPitchHz(bool realAudio) const
+{
+    const double offset = (m_traceWindow && m_traceWindow->hasTarget())
+                              ? static_cast<double>(m_traceWindow->targetOffsetHz())
+                              : 0.0;
+    /*
+     * The waterfall FFT uses cos+I*sin, so a tone at true baseband f is
+     * drawn at FFT offset -f. On IQ the dial carrier is FFT bin 0, and
+     * targetOffsetHz is that bin once the dial has arrived. The channel
+     * decoder wants that true frequency.
+     * Receiver audio is single-sided and the trace offset is measured from
+     * the middle of the strip, so add half the strip back.
+     */
+    if (!realAudio) {
+        return -offset;
+    }
+    const double half = 0.5 * static_cast<double>(m_spectrumBins)
+                        * static_cast<double>(m_spectrumBinWidth);
+    return offset + half;
+}
+
+void MainWindow::onBasebandReady(QByteArray iq, int sampleRate, bool realAudio)
+{
+    const bool cwsk = m_morseBackend == MorseDecoderBackend::Cwsk && m_cwskWindow;
+    const bool deepcw = m_morseBackend == MorseDecoderBackend::DeepCw && m_deepcwWindow;
+    if (m_freezeDisplay || (!cwsk && !deepcw)) {
+        return;
+    }
+    if (!m_traceWindow || !m_traceWindow->hasTarget()) {
+        return;
+    }
+    /* Cwsk paints the trace window. DeepCW decodes with that window hidden. */
+    if (!deepcw && !m_traceWindow->isVisible()) {
+        return;
+    }
+    if (sampleRate <= 0 || iq.size() < static_cast<int>(2 * sizeof(float))) {
+        return;
+    }
+    if (realAudio && (m_spectrumBins < 2 || m_spectrumBinWidth <= 0.0f)) {
+        return;
+    }
+
+    const int complexCount = iq.size() / static_cast<int>(2 * sizeof(float));
+    const float *samples = reinterpret_cast<const float *>(iq.constData());
+    const QString label =
+        QString("IF %1 Hz").arg(traceDisplayHz(), 0, 'f', 0);
+    if (deepcw) {
+        if (m_deepcwRetune || !m_deepcwWindow->isTuned()) {
+            m_deepcwWindow->setTune(sampleRate, cwskPitchHz(realAudio), realAudio);
+            m_deepcwRetune = false;
+        }
+        m_deepcwWindow->setTargetLabel(label);
+        m_deepcwWindow->feed(samples, complexCount);
+        return;
+    }
+
+    if (m_cwskRetune || !m_cwskWindow->isTuned()) {
+        m_cwskWindow->setTune(sampleRate, cwskPitchHz(realAudio), 150.0);
+        m_cwskRetune = false;
+    }
+    m_cwskWindow->setTargetLabel(label);
+    m_cwskWindow->feed(samples, complexCount);
 }
 
 QString MainWindow::trainingBrowseDirectory() const
@@ -1271,6 +2059,8 @@ void MainWindow::onStartPlaybackClicked()
 
     m_freezeDisplay = false;
     m_trainingPlayback = true;
+    m_radioTunePending = false;
+    syncCwKeyboard();
     onLogMessage(QStringLiteral("Training playback: %1").arg(m_trainingFile), 1);
     QMetaObject::invokeMethod(m_worker, "setConfig", Qt::QueuedConnection,
                               Q_ARG(QString, QStringLiteral("training_file")),
@@ -1598,9 +2388,19 @@ void MainWindow::updateConnectionIndicator()
 void MainWindow::updateStatusBar()
 {
     QString statusText = m_isRunning ? "Status: RUNNING" : "Status: STOPPED";
-    if (m_lastCenterFreqHz > 1.0e5f) {
-        statusText += QString("  RF %1 MHz")
-                          .arg(m_lastCenterFreqHz / 1e6f, 0, 'f', 6);
+    /*
+     * The green trace is an IF offset on the current waterfall center.
+     * On IQ the RF under the line is the center minus that offset.
+     * It replaces the VFO center readout.
+     */
+    if (m_spectrumWidget && m_spectrumWidget->hasTraceSelection()) {
+        const float center = m_spectrumWidget->centerFrequency();
+        if (center > 1.0e5f) {
+            const float traceHz = m_spectrumWidget->rfHzForOffset(
+                m_spectrumWidget->traceOffsetHz());
+            statusText += QString("  RF %1 MHz")
+                              .arg(traceHz / 1e6f, 0, 'f', 6);
+        }
     }
     if (!m_spectrumModeLabel.isEmpty()) {
         statusText += QString("  [%1]").arg(m_spectrumModeLabel);

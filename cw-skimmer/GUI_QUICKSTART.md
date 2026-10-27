@@ -50,13 +50,17 @@ The window reads `cw-skimmer.conf` from the working directory, then from the dir
 - **Start playback** plays that file. **Start** does not.
 - **Play capture…** replays a saved `.wav` or `.cwtrace` through the signal trace and the bottom decoder.
 - **Stream** switches the radio between IQ and demodulated audio.
-- **Decoder** cycles the bottom pane: Threshold, then Mask, then Spectrum. The program opens on Spectrum. The lines beside the waterfall stay on Spectrum.
+- **Decoder** cycles the bottom pane: Threshold, then Mask, then Spectrum, then Cwsk, then DeepCW. The program opens on DeepCW. The lines beside the waterfall stay on Spectrum. DeepCW needs the model in `models/` and ONNX Runtime (`make ort` downloads it).
 - **Audio out** and **Vol** choose the speaker for the 700 Hz sidetone. Sound plays only while detection is running and the signal trace is open on a frequency.
 
 ## Using the window
 
-The waterfall shows 10 kHz. The scrollbar to the right of the spectrum and the copy moves both together. The wheel does the same. Wheel up moves toward higher frequency. The view opens centered on the VFO.
+The waterfall shows 10 kHz. The scrollbar to the right of the spectrum and the copy moves both together. The wheel does the same. Wheel up moves toward the top of the picture. On IQ the higher frequency is toward the bottom. The view opens centered on the VFO.
 
-Click a trace to open the signal trace and to copy that slice's text into the bottom Morse decoder. Both windows keep decoding. **Record**, above the waterfall, saves the trace envelope.
+The tune slider on the left of the waterfall moves the green trace. On IQ the top of the slider is the lower frequency. Dragging moves the marker, and releasing it retunes the signal trace the same way a click does. **Clear** on the copy beside the waterfall wipes that copy only. The toolbar **Clear** still wipes the waterfall, the side copy, and the bottom Morse panes.
+
+Click a trace to copy that slice's text into the bottom Morse decoder. Both keep decoding. The green line sits on the row you clicked. The green text on that line is the dial frequency sent to the radio, in MHz. The signal-trace window opens unless the decoder is DeepCW. On a live IQ radio the dial moves to that frequency. The green line stays on the click until the dial arrives. The station is then the center bin, the sidetone in the headphones and the transmit frequency. The line and the decoder move there, and the 10 kHz view follows. On IQ the frequency is the center minus the picture offset, so a click below the center tunes up. AFC peak-lock starts off. **Record**, above the waterfall, saves the trace envelope.
+
+The **CW Keyboard** under the Morse decoder sends what you type. **Stop** there aborts the send. Put the radio in CW first. Training playback does not transmit.
 
 CQ is green. A call sign turns red after the same call appears twice in that decoder's text.

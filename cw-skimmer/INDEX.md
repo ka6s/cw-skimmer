@@ -7,20 +7,22 @@ The git root is the parent of this directory. Sources live here.
 ## Run and configure
 
 - [cw-skimmer.conf](./cw-skimmer.conf) — radio `127.0.0.1:50001` websocket, 14.074 MHz, 48 kHz, 48 decode slices, spotting off, training file empty
-- [Makefile](./Makefile) — `make`, `make gui`, `make test`, `make training-gen`, `make training-data`
+- [Makefile](./Makefile) — `make`, `make gui`, `make test`, `make ort`, `make deepcw-test`, `make radio-test`, `make training-gen`, `make training-data`
 - [install.sh](./install.sh) — installs the command-line detector under `/opt/cw-skimmer`, not the Qt window
 - [systemd/cw-skimmer.service](./systemd/cw-skimmer.service) — runs that command-line binary
 
 ## Window (`gui/`)
 
 - [cw_skimmer_gui.pro](./gui/cw_skimmer_gui.pro) — Qt5 project. `make gui` runs qmake on it.
-- [mainwindow.cpp](./gui/mainwindow.cpp) — toolbar, waterfall, side copy, bottom Morse panes, radio and training
+- [mainwindow.cpp](./gui/mainwindow.cpp) — toolbar, waterfall, side copy, bottom Morse panes, click-to-tune, radio and training
+- [cwkeyboard.cpp](./gui/cwkeyboard.cpp) — type-ahead CW under the Morse decoder
 - [spectrumwidget.cpp](./gui/spectrumwidget.cpp) — waterfall, 10 kHz view, click-to-trace
 - [decodewidget.cpp](./gui/decodewidget.cpp) — side copy, locked to each trace
 - [multichanneldecoder.cpp](./gui/multichanneldecoder.cpp) — 48 slices of 1 kHz, one spectrum decoder each
-- [spectrummorsewindow.cpp](./gui/spectrummorsewindow.cpp) — spectrum Morse, used on the side and as the default bottom pane
+- [spectrummorsewindow.cpp](./gui/spectrummorsewindow.cpp) — spectrum Morse, used on the side. The bottom pane opens on DeepCW
 - [thresholdmorsewindow.cpp](./gui/thresholdmorsewindow.cpp) — threshold Morse
 - [maskmorsewindow.cpp](./gui/maskmorsewindow.cpp) — mask Morse
+- [deepcwmorsewindow.cpp](./gui/deepcwmorsewindow.cpp) — DeepCW pane. Real audio at 800 Hz into the ONNX model
 - [cwcopyformat.cpp](./gui/cwcopyformat.cpp) — green CQ, red repeated call
 - [signaltracewindow.cpp](./gui/signaltracewindow.cpp) — clicked-signal scope
 - [audiomonitor.cpp](./gui/audiomonitor.cpp) — 700 Hz sidetone of the trace envelope
@@ -35,6 +37,7 @@ The git root is the parent of this directory. Sources live here.
 - [tci_client.c](./src/tci_client.c), [tci_stream.h](./src/tci_stream.h) — TCI text and the 64-byte binary frame
 - [audio_processor.c](./src/audio_processor.c) — 1024-point waterfall FFT
 - [cwskimmer_api.c](./src/cwskimmer_api.c) — session the window calls
+- [radio_control.c](./src/radio_control.c) — TCI `dds`/`vfo` tune, and CW text via `cw_macros` or Kenwood KY
 - [config.c](./src/config.c) — `cw-skimmer.conf`
 - [cw_decoder.c](./src/cw_decoder.c), [ditdah_decoder.c](./src/ditdah_decoder.c) — command-line dit/dah Morse
 - [cw_detector.c](./src/cw_detector.c), [bayesian_tree.c](./src/bayesian_tree.c), [signal_analyzer.c](./src/signal_analyzer.c) — older command-line detector
@@ -42,6 +45,7 @@ The git root is the parent of this directory. Sources live here.
 - [spot_reporter.c](./src/spot_reporter.c) — optional telnet spots, off unless `spot_enabled=1`
 - [cw_capture.c](./src/cw_capture.c), [decode_worker.c](./src/decode_worker.c), [cw_keying_detector.c](./src/cw_keying_detector.c) — capture and keying
 - [logger.c](./src/logger.c), [perf_profile.c](./src/perf_profile.c), [main.c](./src/main.c)
+- [deepcw_engine.cpp](./src/deepcw_engine.cpp) — DeepCW spectrogram, stitcher, and ONNX session. Models are `models/model.onnx` and `models/model.onnx.json`
 
 ## Training and checks
 
@@ -49,3 +53,4 @@ The git root is the parent of this directory. Sources live here.
 - [training/decoder_labels.tsv](./training/decoder_labels.tsv) — expected copy for each tone
 - [training/](./training/) — `set_01.txt` through `set_10.txt` and `transcripts.txt`. The `.tcistream` binaries are generated and are not in git.
 - [tests/test_detector.c](./tests/test_detector.c), [tests/test_replay_capture.c](./tests/test_replay_capture.c), [tests/test_synth_capture.c](./tests/test_synth_capture.c) — command-line checks (`make test`, `make replay`, `make synth`)
+- [tests/test_radio_control.c](./tests/test_radio_control.c) — tune and CW command text (`make radio-test`)

@@ -97,15 +97,13 @@ static void ap_push_spectrum(audio_processor_t *proc, const float *power, int n_
     }
 }
 
-/* Real-audio waterfall: CW pitch lives ~300–1200 Hz; radio filter is a few
- * hundred Hz wide. Showing full 0–24 kHz compresses that into a thin white
- * strip at the bottom. Crop to this span for display. */
-#define AP_AUDIO_DISPLAY_MAX_HZ  3500.0f
+/* Real audio is 0..Nyquist. Blank only the DC rumble. Do not crop the
+ * top of the picture: the GUI shows the whole span. */
 #define AP_AUDIO_LF_CUT_HZ       120.0f
 
 /*
  * Complex IQ: full fftshift spectrum, DC at n/2, ±Fs/2.
- * Real audio: mono, single-sided, crop to CW audio band, LF suppressed.
+ * Real audio: mono, single-sided, 0..Nyquist, LF rumble suppressed.
  * Returns number of bins written to power_out.
  */
 static int ap_compute_fft_power(const float complex *iq, int n,
@@ -148,17 +146,10 @@ static int ap_compute_fft_power(const float complex *iq, int n,
     if (real_audio_mode) {
         float bin_hz = (float)sample_rate_hz / (float)n;
         int full_side = n / 2;
-        int max_bin = (int)(AP_AUDIO_DISPLAY_MAX_HZ / bin_hz + 0.5f);
+        int max_bin = full_side;
         int lf_cut = (int)(AP_AUDIO_LF_CUT_HZ / bin_hz + 0.5f);
         float ref;
         int mid0, mid1, k;
-
-        if (max_bin < 48) {
-            max_bin = 48;
-        }
-        if (max_bin > full_side) {
-            max_bin = full_side;
-        }
         if (lf_cut < 2) {
             lf_cut = 2;
         }
@@ -257,7 +248,8 @@ static void ap_narrow_try_fft(audio_processor_t *proc)
     }
 
     {
-        int bins = ap_compute_fft_power(frame, n, power, 2, proc->real_audio_mode,
+        /* The dial carrier is this DC bin on CW IQ. Do not blank it. */
+        int bins = ap_compute_fft_power(frame, n, power, 0, proc->real_audio_mode,
                                         proc->effective_fs > 0 ? proc->effective_fs
                                                                : proc->sample_rate);
         proc->spectrum_bins = bins;
@@ -284,7 +276,14 @@ static int ap_process_wide(audio_processor_t *proc, float complex *iq_input, int
     }
 
     {
-        int bins = ap_compute_fft_power(iq_input + (input_count - FFT_N), FFT_N, power, 4,
+        /*
+         * Notch stays off. deskHPSDR puts the CW dial carrier on this DC bin:
+         * the oscillator sits one sidetone off the dial, then the IQ stream
+         * is shifted by that sidetone. That bin is the station in the
+         * headphones and the frequency the radio will transmit. Blanking it
+         * removes the station from the waterfall and from the decoder.
+         */
+        int bins = ap_compute_fft_power(iq_input + (input_count - FFT_N), FFT_N, power, 0,
                                         proc->real_audio_mode,
                                         proc->effective_fs > 0 ? proc->effective_fs
                                                                : proc->sample_rate);

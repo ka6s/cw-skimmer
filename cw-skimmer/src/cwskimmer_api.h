@@ -47,6 +47,7 @@ typedef struct {
     int spectrum_peak_count;
     int buffer_fill;
     int connected;
+    int audio_only;         /* 1 when the live stream is demodulated RX audio */
     int samples_processed;
     float cpu_usage;
     int queue_size;
@@ -153,6 +154,23 @@ void cwskimmer_set_monitor_tone(cwskimmer_detector_t *detector,
                                 float offset_hz, int enabled);
 
 /**
+ * Raw radio samples, one chunk at a time, in the same order the spectrum sees.
+ * iq is interleaved I,Q (count complex samples). real_audio is 1 when the
+ * stream is demodulated receiver audio (Q is zero). The pointer is only
+ * valid for the duration of the call. Nothing is emitted unless the tap is on.
+ */
+typedef void (*cwskimmer_baseband_callback)(const float *iq, int count,
+                                           int sample_rate, int real_audio,
+                                           void *userdata);
+
+void cwskimmer_set_baseband_callback(cwskimmer_detector_t *detector,
+                                     cwskimmer_baseband_callback callback,
+                                     void *userdata);
+
+/** enabled=0 (the default) does not copy or emit samples. */
+void cwskimmer_set_baseband_tap(cwskimmer_detector_t *detector, int enabled);
+
+/**
  * Start detection (begins main processing loop)
  * This should be called from a separate thread
  * @return 0 on success, -1 on error
@@ -199,6 +217,27 @@ const char *cwskimmer_config_get(cwskimmer_detector_t *detector,
  * @param notes Optional free-form notes
  * @return 0 on success, -1 on error
  */
+/**
+ * Move the radio dial and the spectrum center to hz.
+ * Safe from the GUI thread. Ignored during training playback.
+ */
+int cwskimmer_tune_hz(cwskimmer_detector_t *detector, long long hz);
+
+/**
+ * Queue CW text for the radio. TCI cw_macros, or Kenwood KY when configured.
+ * Characters outside the CW set are dropped.
+ */
+int cwskimmer_cw_send(cwskimmer_detector_t *detector, const char *text);
+
+/** Abort queued CW and send cw_macros_stop. */
+int cwskimmer_cw_stop(cwskimmer_detector_t *detector);
+
+/** Set the radio keyer speed (5–60 WPM). */
+int cwskimmer_cw_set_wpm(cwskimmer_detector_t *detector, int wpm);
+
+/** "tci" or "ky". out receives a short label. */
+int cwskimmer_cw_send_mode(cwskimmer_detector_t *detector, char *out, int out_max);
+
 /**
  * Snapshot the current 20-second IQ ring buffer (call on Shift+click before the
  * capture dialog). save_capture writes this frozen copy if present.

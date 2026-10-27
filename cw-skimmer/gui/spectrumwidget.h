@@ -28,11 +28,16 @@ public:
     void clear();
 
     float centerFrequency() const { return m_centerFrequency; }
+    /** +1: RF is center plus the offset. -1: RF is center minus the offset. */
+    void setRfOffsetSign(int sign);
+    float rfHzForOffset(float offsetHz) const;
     float binWidth() const { return m_binWidth; }
     bool hasTraceSelection() const { return m_hasTraceSelection; }
     float traceOffsetHz() const { return m_traceOffsetHz; }
     void clearTraceSelection();
     void setTraceOffsetHz(float offsetHz);
+    /** Dial frequency, in Hz, that this offset asks the radio to use. */
+    void setTraceRadioHz(double hz);
     int consecutiveWhiteColumns() const { return m_whiteStreak; }
 
     /**
@@ -64,9 +69,20 @@ public:
 
     /**
      * Show spanHz of the waterfall, with lowHz at the bottom of the plot.
-     * spanHz of 10000 is the on-screen window; the rest is reached by scrolling.
+     * The wide path passes the full span (48 kHz). A smaller span scrolls.
+     * lowHz is a display offset: FFT Hz minus the picture origin.
      */
     void setFrequencyView(float lowHz, float spanHz);
+
+    /**
+     * FFT offset drawn at display 0, the center of the 48 kHz window.
+     * The IQ bins stay put when the dial report changes, so a tune recenters
+     * by moving this origin onto the selected bin. The line stays on that bin.
+     */
+    void setPictureOriginHz(float fftHz);
+    float pictureOriginHz() const { return m_pictureOriginHz; }
+    float fftHzForDisplay(float displayHz) const;
+    float displayHzForFft(float fftHz) const;
 
 signals:
     void captureMarkRequested(float freqOffsetHz, float absFreqHz);
@@ -118,6 +134,7 @@ private:
 
     int offsetToBinIndex(float freqOffsetHz, int numBins) const;
     int binIndexToY(int binIndex, int numBins, int plotY, int plotHeight) const;
+    int offsetHzToY(float freqOffsetHz, int plotY, int plotHeight) const;
     void visibleFrequency(int numBins, float &lowHz, float &highHz) const;
 
     QColor powerToColor(float power_db, float noise_floor_db) const;
@@ -135,6 +152,7 @@ private:
     int m_plotHeight;
     float m_noiseFloorDb;
     float m_centerFrequency;
+    int m_rfOffsetSign;
     float m_binWidth;
     QVector<SignalData> m_signals;
     int m_maxSignalAge;  // in ms
@@ -142,6 +160,7 @@ private:
 
     bool m_hasTraceSelection;
     float m_traceOffsetHz;
+    double m_traceRadioHz;
 
     /* All-white / freeze diagnostics */
     int m_whiteStreak;
@@ -159,7 +178,9 @@ private:
     double m_perfPaintMaxMs;
     int m_perfPaintCount;
 
-    /* Vertical slice of the full band drawn into the plot. 0 span draws it all. */
+    /* FFT Hz drawn at display 0. Display Hz = FFT Hz − origin. */
+    float m_pictureOriginHz;
+    /* Vertical slice of the full band drawn into the plot, in display Hz. */
     float m_viewLowHz;
     float m_viewSpanHz;
 };

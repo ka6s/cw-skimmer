@@ -26,6 +26,9 @@ SOURCES += \
     thresholdmorsewindow.cpp \
     maskmorsewindow.cpp \
     spectrummorsewindow.cpp \
+    cwskmorsewindow.cpp \
+    deepcwmorsewindow.cpp \
+    cwkeyboard.cpp \
     multichanneldecoder.cpp \
     audiomonitor.cpp
 
@@ -43,6 +46,9 @@ HEADERS += \
     thresholdmorsewindow.h \
     maskmorsewindow.h \
     spectrummorsewindow.h \
+    cwskmorsewindow.h \
+    deepcwmorsewindow.h \
+    cwkeyboard.h \
     multichanneldecoder.h \
     audiomonitor.h
 
@@ -63,7 +69,15 @@ SOURCES += \
     ../src/logger.c \
     ../src/signal_analyzer.c \
     ../src/spot_reporter.c \
-    ../src/tci_client.c
+    ../src/tci_client.c \
+    ../src/radio_control.c \
+    ../src/cwsk_decoder.c \
+    ../src/deepcw_engine.cpp
+
+ORT_ROOT = $$PWD/../third_party/onnxruntime
+INCLUDEPATH += $$ORT_ROOT/include
+LIBS += -L$$ORT_ROOT/lib -lonnxruntime
+QMAKE_RPATHDIR += $$ORT_ROOT/lib
 
 unix {
     LIBS += -lpthread -lm -lwebsockets

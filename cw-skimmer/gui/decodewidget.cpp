@@ -11,6 +11,7 @@
 #include <QResizeEvent>
 #include <QWheelEvent>
 #include <QScrollBar>
+#include <QPushButton>
 #include <QDateTime>
 #include <QSizePolicy>
 #include <QFontMetrics>
@@ -38,9 +39,11 @@ DecodeWidget::DecodeWidget(QWidget *parent)
     , m_centerHz(0.0f)
     , m_binWidthHz(46.875f)
     , m_numBins(1024)
+    , m_pictureOriginHz(0.0f)
     , m_viewLowHz(0.0f)
     , m_viewSpanHz(0.0f)
     , m_textScrollBar(nullptr)
+    , m_clearButton(nullptr)
     , m_pinTextEnd(true)
     , m_displayThreshold(cw_message_validator_display_threshold(CW_VALIDATION_NORMAL))
     , m_charsPerLine(kDefaultChars)
@@ -61,6 +64,16 @@ DecodeWidget::DecodeWidget(QWidget *parent)
         m_pinTextEnd = (value >= m_textScrollBar->maximum());
         update();
     });
+
+    m_clearButton = new QPushButton(QStringLiteral("Clear"), this);
+    m_clearButton->setObjectName(QStringLiteral("sideCopyClear"));
+    m_clearButton->setCursor(Qt::PointingHandCursor);
+    m_clearButton->setToolTip(QStringLiteral("Clear the copy beside the waterfall."));
+    m_clearButton->setStyleSheet(
+        "QPushButton { background: #2a2a2a; color: #f2f2f2; border: 1px solid #666666; "
+        "padding: 0 8px; font-size: 11px; }"
+        "QPushButton:hover { background: #3a3a3a; }");
+    connect(m_clearButton, &QPushButton::clicked, this, &DecodeWidget::clearRequested);
 }
 
 void DecodeWidget::setValidationMode(const QString &mode)
@@ -87,6 +100,15 @@ void DecodeWidget::setFrequencyScale(float centerHz, float binWidthHz, int numBi
         m_binWidthHz = binWidthHz;
     }
     m_centerHz = centerHz;
+    update();
+}
+
+void DecodeWidget::setPictureOriginHz(float fftHz)
+{
+    if (std::fabs(fftHz - m_pictureOriginHz) < 0.5f) {
+        return;
+    }
+    m_pictureOriginHz = fftHz;
     update();
 }
 
@@ -154,8 +176,9 @@ int DecodeWidget::offsetToY(float freqOffsetHz) const
      */
     const int plotY = kPlotTop;
     const int plotHeight = std::max(1, height() - kPlotTop - kPlotBottomMargin);
+    const float displayHz = freqOffsetHz - m_pictureOriginHz;
     if (m_viewSpanHz > 1.0f) {
-        const float frac = (m_viewLowHz + m_viewSpanHz - freqOffsetHz) / m_viewSpanHz;
+        const float frac = (m_viewLowHz + m_viewSpanHz - displayHz) / m_viewSpanHz;
         return static_cast<int>(std::lround(plotY + frac * static_cast<float>(plotHeight)));
     }
     if (m_numBins <= 1 || m_binWidthHz <= 0.0f) {
@@ -351,9 +374,10 @@ void DecodeWidget::paintEvent(QPaintEvent * /*event*/)
         if (line.text.isEmpty()) {
             continue;
         }
+        const float displayHz = line.freqOffsetHz - m_pictureOriginHz;
         if (m_viewSpanHz > 1.0f
-            && (line.freqOffsetHz < m_viewLowHz
-                || line.freqOffsetHz > m_viewLowHz + m_viewSpanHz)) {
+            && (displayHz < m_viewLowHz
+                || displayHz > m_viewLowHz + m_viewSpanHz)) {
             continue;
         }
         const int yCenter = offsetToY(line.freqOffsetHz);
@@ -409,6 +433,11 @@ void DecodeWidget::resizeEvent(QResizeEvent *event)
     if (m_textScrollBar) {
         const int h = std::max(14, m_textScrollBar->sizeHint().height());
         m_textScrollBar->setGeometry(2, height() - h - 2, std::max(1, width() - 4), h);
+    }
+    if (m_clearButton) {
+        const int bw = std::min(72, std::max(48, width() / 4));
+        m_clearButton->setGeometry(std::max(2, width() - bw - 4), 1, bw, 18);
+        m_clearButton->raise();
     }
     updateTextScrollBar();
 }

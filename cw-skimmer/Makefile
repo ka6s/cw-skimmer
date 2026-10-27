@@ -54,7 +54,13 @@ TEST_OBJECTS := $(TEST_OBJECTS:$(TESTDIR)/%.c=$(OBJDIR)/%.o)
 # Directories
 DIRS = $(OBJDIR) $(BINDIR)
 
-.PHONY: all clean debug test replay synth help gui gui-clean training-gen training-data
+.PHONY: all clean debug test replay synth help gui gui-clean training-gen training-data ort deepcw-test radio-test
+
+ORT_DIR := third_party/onnxruntime
+ORT_LIB := $(ORT_DIR)/lib/libonnxruntime.so
+ORT_TGZ := /tmp/onnxruntime-linux-x64-1.31.0.tgz
+DEEPCW_TEST := $(BINDIR)/test_deepcw_decode
+RADIO_TEST := $(BINDIR)/test_radio_control
 
 TRAIN_GEN = $(BINDIR)/cw-training-gen
 
@@ -112,8 +118,37 @@ $(REPLAY_TARGET): $(REPLAY_OBJECTS)
 	$(CC) -o $@ $^ $(LDFLAGS) -L/usr/lib64 -lcap
 	@echo "✓ Built: $@"
 
+# ONNX Runtime 1.31 CPU build used by the DeepCW pane.
+ort: $(ORT_LIB)
+
+$(ORT_LIB):
+	mkdir -p /tmp/ort-dl
+	curl -L --fail -o $(ORT_TGZ) https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/onnxruntime-linux-x64-1.31.0.tgz
+	rm -rf /tmp/ort-dl/onnxruntime-linux-x64-1.31.0
+	tar -xzf $(ORT_TGZ) -C /tmp/ort-dl
+	rm -rf $(ORT_DIR)/include $(ORT_DIR)/lib
+	mkdir -p $(ORT_DIR)
+	mv /tmp/ort-dl/onnxruntime-linux-x64-1.31.0/include $(ORT_DIR)/include
+	mv /tmp/ort-dl/onnxruntime-linux-x64-1.31.0/lib $(ORT_DIR)/lib
+	@echo "✓ ONNX Runtime in $(ORT_DIR)"
+
+deepcw-test: $(ORT_LIB) $(DEEPCW_TEST)
+	./$(DEEPCW_TEST) models/model.onnx models/model.onnx.json
+
+$(DEEPCW_TEST): tests/test_deepcw_decode.cpp src/deepcw_engine.cpp src/deepcw_engine.h $(ORT_LIB) | $(BINDIR)
+	$(CXX) $(CXXFLAGS) -I$(SRCDIR) -I$(ORT_DIR)/include tests/test_deepcw_decode.cpp src/deepcw_engine.cpp \
+		-L$(ORT_DIR)/lib -lonnxruntime -Wl,-rpath,$(CURDIR)/$(ORT_DIR)/lib -o $@
+
+# Command formatting for tune and CW send. Not part of the default build.
+radio-test: $(DIRS) $(RADIO_TEST)
+	./$(RADIO_TEST)
+
+$(RADIO_TEST): tests/test_radio_control.c src/radio_control.c src/tci_client.c src/logger.c | $(BINDIR)
+	$(CC) $(CFLAGS) -I$(SRCDIR) tests/test_radio_control.c src/radio_control.c src/tci_client.c src/logger.c \
+		$(LDFLAGS) -o $@
+
 # GUI targets
-gui: shared-lib
+gui: shared-lib $(ORT_LIB)
 ifeq ($(HAS_QT5),1)
 	@echo "✓ Building Qt5 GUI..."
 	@cd $(GUIDIR) && qmake -o Makefile.qt5 cw_skimmer_gui.pro && make -f Makefile.qt5
@@ -142,6 +177,9 @@ help:
 	@echo "CW Skimmer Makefile targets:"
 	@echo "  make all            - Build the main CLI executable and shared library"
 	@echo "  make gui            - Build the Qt5 GUI (requires Qt5)"
+	@echo "  make ort            - Download ONNX Runtime for the DeepCW pane"
+	@echo "  make deepcw-test    - Decode a synthetic tone with DeepCW"
+	@echo "  make radio-test     - Check tune and CW command formatting"
 	@echo "  make debug          - Build CLI with debug symbols"
 	@echo "  make test           - Build and run tests"
 	@echo "  make training-gen   - Build the TCI training-file generator"

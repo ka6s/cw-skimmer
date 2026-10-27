@@ -17,6 +17,7 @@
 #include <QVector>
 #include "multichanneldecoder.h"
 
+class QPushButton;
 class QScrollBar;
 class QResizeEvent;
 class QWheelEvent;
@@ -32,6 +33,8 @@ public:
 
     /** Same vertical slice the waterfall is showing. lowHz is the bottom edge. */
     void setFrequencyView(float lowHz, float spanHz);
+    /** Same picture origin as the waterfall, so copy stays on its trace. */
+    void setPictureOriginHz(float fftHz);
     void setValidationMode(const QString &mode);
 
     /** Max characters shown per decode line (default 10). */
@@ -58,6 +61,8 @@ public slots:
 signals:
     /** Mouse wheel over the copy. Positive deltaY scrolls toward higher frequency. */
     void verticalScrollRequested(int deltaY);
+    /** Clear button on this copy. The main window also resets the side decoders. */
+    void clearRequested();
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -89,9 +94,11 @@ private:
     float m_centerHz;
     float m_binWidthHz;
     int m_numBins;
+    float m_pictureOriginHz;
     float m_viewLowHz;
     float m_viewSpanHz;
     QScrollBar *m_textScrollBar;
+    QPushButton *m_clearButton;
     bool m_pinTextEnd;
     float m_displayThreshold;
     int m_charsPerLine;

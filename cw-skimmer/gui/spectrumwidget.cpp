@@ -5,6 +5,7 @@
 
 #include "spectrumwidget.h"
 #include <QPainter>
+#include <QFontMetrics>
 #include <QResizeEvent>
 #include <QDateTime>
 #include <cmath>
@@ -34,6 +35,20 @@ int columnDisplayX(int colIndex, int totalCols, int plotWidth)
     return colIndex - firstVisible;
 }
 
+QFont frequencyFont()
+{
+    /* Same face and size as the Morse copy beside the waterfall. */
+    QFont font(QStringLiteral("Courier New"), 11);
+    font.setStyleHint(QFont::Monospace);
+    return font;
+}
+
+int frequencyColumnWidth()
+{
+    /* Five decimal places, wide enough for 1000s of MHz: "0000.00000". */
+    return QFontMetrics(frequencyFont()).horizontalAdvance(QStringLiteral("0000.00000"));
+}
+
 }  // namespace
 
 SpectrumWidget::SpectrumWidget(QWidget *parent)
@@ -42,11 +57,13 @@ SpectrumWidget::SpectrumWidget(QWidget *parent)
     , m_plotHeight(0)
     , m_noiseFloorDb(-95.0f)
     , m_centerFrequency(0)
+    , m_rfOffsetSign(1)
     , m_binWidth(48000.0f / 1024.0f)
     , m_maxSignalAge(10000)
     , m_scrollWidth(800)
     , m_hasTraceSelection(false)
     , m_traceOffsetHz(0.0f)
+    , m_traceRadioHz(0.0)
     , m_whiteStreak(0)
     , m_whiteEventCount(0)
     , m_lastWhiteLogMs(0)
@@ -59,6 +76,7 @@ SpectrumWidget::SpectrumWidget(QWidget *parent)
     , m_perfPaintTotalMs(0.0)
     , m_perfPaintMaxMs(0.0)
     , m_perfPaintCount(0)
+    , m_pictureOriginHz(0.0f)
     , m_viewLowHz(0.0f)
     , m_viewSpanHz(0.0f)
 {
@@ -73,6 +91,7 @@ void SpectrumWidget::clearTraceSelection()
 {
     m_hasTraceSelection = false;
     m_traceOffsetHz = 0.0f;
+    m_traceRadioHz = 0.0;
     update();
 }
 
@@ -81,6 +100,27 @@ void SpectrumWidget::setTraceOffsetHz(float offsetHz)
     m_hasTraceSelection = true;
     m_traceOffsetHz = offsetHz;
     update();
+}
+
+void SpectrumWidget::setTraceRadioHz(double hz)
+{
+    m_traceRadioHz = hz;
+    update();
+}
+
+void SpectrumWidget::setRfOffsetSign(int sign)
+{
+    const int next = (sign < 0) ? -1 : 1;
+    if (next == m_rfOffsetSign) {
+        return;
+    }
+    m_rfOffsetSign = next;
+    update();
+}
+
+float SpectrumWidget::rfHzForOffset(float offsetHz) const
+{
+    return m_centerFrequency + static_cast<float>(m_rfOffsetSign) * offsetHz;
 }
 
 float SpectrumWidget::powerAtOffset(const QVector<float> &spectrum, float freqOffsetHz,
@@ -189,10 +229,33 @@ int SpectrumWidget::offsetToBinIndex(float freqOffsetHz, int numBins) const
     return std::max(0, std::min(numBins - 1, binIndex));
 }
 
+float SpectrumWidget::fftHzForDisplay(float displayHz) const
+{
+    return displayHz + m_pictureOriginHz;
+}
+
+float SpectrumWidget::displayHzForFft(float fftHz) const
+{
+    return fftHz - m_pictureOriginHz;
+}
+
+void SpectrumWidget::setPictureOriginHz(float fftHz)
+{
+    if (std::fabs(fftHz - m_pictureOriginHz) < 0.5f) {
+        return;
+    }
+    m_pictureOriginHz = fftHz;
+    rebuildWaterfallImage();
+    update();
+}
+
 void SpectrumWidget::visibleFrequency(int numBins, float &lowHz, float &highHz) const
 {
     const float bw = (m_binWidth > 0.0f) ? m_binWidth : 1.0f;
     const float span = std::max(0.0f, static_cast<float>(std::max(0, numBins)) * bw);
+    /* Display Hz is centered on the picture origin, so a tune puts the
+     * selected bin in the middle of the 48 kHz window. Bins the FFT does
+     * not cover stay black. */
     const float fullLow = -0.5f * span;
     if (m_viewSpanHz <= 1.0f || span <= m_viewSpanHz + 1.0f) {
         lowHz = fullLow;
@@ -226,16 +289,34 @@ int SpectrumWidget::binIndexToY(int binIndex, int numBins, int plotY, int plotHe
     float highHz = 0.0f;
     visibleFrequency(numBins, lowHz, highHz);
     const float span = std::max(1.0f, highHz - lowHz);
-    const float freq = (static_cast<float>(binIndex) - static_cast<float>(numBins) / 2.0f) * m_binWidth;
+    const float fftHz = (static_cast<float>(binIndex) - static_cast<float>(numBins) / 2.0f) * m_binWidth;
+    const float freq = fftHz - m_pictureOriginHz;
     const float frac = (highHz - freq) / span;
     return static_cast<int>(std::lround(plotY + frac * static_cast<float>(plotHeight)));
 }
 
+int SpectrumWidget::offsetHzToY(float freqOffsetHz, int plotY, int plotHeight) const
+{
+    if (plotHeight <= 0) {
+        return plotY;
+    }
+    const int numBins = m_waterfallColumns.isEmpty() ? 0 : m_waterfallColumns.last().size();
+    float lowHz = 0.0f;
+    float highHz = 0.0f;
+    visibleFrequency(numBins, lowHz, highHz);
+    const float span = std::max(1.0f, highHz - lowHz);
+    const float frac = (highHz - freqOffsetHz) / span;
+    return static_cast<int>(std::lround(static_cast<double>(plotY)
+                                         + static_cast<double>(frac) * plotHeight));
+}
+
 QRect SpectrumWidget::plotRect() const
 {
-    const int plotX = 40;
     const int plotY = 20;
-    const int plotWidth = std::max(1, width() - 60);
+    const int rightMargin = 20;
+    /* Leave the full frequency column on screen, to the left of the plot. */
+    const int plotX = 4 + frequencyColumnWidth() + 6;
+    const int plotWidth = std::max(1, width() - plotX - rightMargin);
     const int plotHeight = std::max(1, height() - 60);
     return QRect(plotX, plotY, plotWidth, plotHeight);
 }
@@ -283,8 +364,9 @@ void SpectrumWidget::mousePressEvent(QMouseEvent *event)
         }
 
         const int y = std::max(plot.top(), std::min(plot.bottom(), event->pos().y()));
-        const float offsetHz = snapOffsetHz(yToFreqOffsetHz(y));
-        const float absFreqHz = m_centerFrequency + offsetHz;
+        /* The row under the pointer. A nearby-peak search put the line off the click. */
+        const float offsetHz = yToFreqOffsetHz(y);
+        const float absFreqHz = rfHzForOffset(offsetHz);
 
         if (event->modifiers() & Qt::ShiftModifier) {
             fprintf(stderr, "[CAPTURE-GUI] shift-click y=%d offset=%.1f Hz abs=%.0f Hz\n",
@@ -463,8 +545,16 @@ void SpectrumWidget::drawWaterfallColumn(int x, const QVector<float> &spectrum, 
         const float frac1 = static_cast<float>(disp_row + 1) / static_cast<float>(m_plotHeight);
         const float fHi = highHz - frac0 * viewSpan;
         const float fLo = highHz - frac1 * viewSpan;
-        int bin_hi = static_cast<int>(std::floor(static_cast<float>(numBins) / 2.0f + fHi / bw));
-        int bin_lo = static_cast<int>(std::floor(static_cast<float>(numBins) / 2.0f + fLo / bw));
+        const float fftHi = fHi + m_pictureOriginHz;
+        const float fftLo = fLo + m_pictureOriginHz;
+        const float halfSpan = 0.5f * static_cast<float>(numBins) * bw;
+        if (fftHi < -halfSpan || fftLo > halfSpan) {
+            QRgb *scanLine = reinterpret_cast<QRgb *>(m_waterfallImage.scanLine(disp_row));
+            scanLine[x] = qRgb(0, 0, 0);
+            continue;
+        }
+        int bin_hi = static_cast<int>(std::floor(static_cast<float>(numBins) / 2.0f + fftHi / bw));
+        int bin_lo = static_cast<int>(std::floor(static_cast<float>(numBins) / 2.0f + fftLo / bw));
         bin_hi = std::max(0, std::min(numBins - 1, bin_hi));
         bin_lo = std::max(0, std::min(numBins - 1, bin_lo));
         if (bin_lo > bin_hi) {
@@ -720,8 +810,9 @@ void SpectrumWidget::updateSpectrum(const QVector<float> &powerSpectrum, float c
         return;
     }
 
-    const int plotWidth = std::max(1, width() - 60);
-    const int plotHeight = std::max(1, height() - 60);
+    const QRect plot = plotRect();
+    const int plotWidth = plot.width();
+    const int plotHeight = plot.height();
     const bool sizeChanged =
         (plotWidth != m_plotWidth) || (plotHeight != m_plotHeight) || m_waterfallImage.isNull();
 
@@ -772,8 +863,9 @@ void SpectrumWidget::appendSpectrumColumns(const QVector<QVector<float>> &column
     m_centerFrequency = centerFreq;
     m_binWidth = binWidth;
 
-    const int plotWidth = std::max(1, width() - 60);
-    const int plotHeight = std::max(1, height() - 60);
+    const QRect plot = plotRect();
+    const int plotWidth = plot.width();
+    const int plotHeight = plot.height();
     const bool sizeChanged =
         (plotWidth != m_plotWidth) || (plotHeight != m_plotHeight) || m_waterfallImage.isNull();
 
@@ -804,6 +896,8 @@ void SpectrumWidget::clear()
     m_waterfallColumns.clear();
     m_hasTraceSelection = false;
     m_traceOffsetHz = 0.0f;
+    m_traceRadioHz = 0.0;
+    m_pictureOriginHz = 0.0f;
     m_whiteStreak = 0;
     m_lastGoodColumn.clear();
     if (!m_waterfallImage.isNull()) {
@@ -825,10 +919,11 @@ void SpectrumWidget::paintEvent(QPaintEvent * /*event*/)
     QPainter painter(this);
     painter.fillRect(rect(), Qt::black);
 
-    const int plotWidth = std::max(1, width() - 60);
-    const int plotHeight = std::max(1, height() - 60);
-    const int plotX = 40;
-    const int plotY = 20;
+    const QRect plot = plotRect();
+    const int plotWidth = plot.width();
+    const int plotHeight = plot.height();
+    const int plotX = plot.x();
+    const int plotY = plot.y();
 
     if (m_waterfallImage.isNull() || m_waterfallColumns.isEmpty()) {
         painter.setPen(Qt::white);
@@ -874,8 +969,7 @@ void SpectrumWidget::paintEvent(QPaintEvent * /*event*/)
 
     /* Selected tone for oscilloscope trace */
     if (m_hasTraceSelection) {
-        const int binIndex = offsetToBinIndex(m_traceOffsetHz, numBins);
-        const int y = binIndexToY(binIndex, numBins, plotY, plotHeight);
+        const int y = offsetHzToY(m_traceOffsetHz, plotY, plotHeight);
         if (y >= plotY && y <= plotY + plotHeight) {
         painter.setPen(QPen(QColor(0, 255, 120), 1, Qt::DashLine));
         painter.drawLine(plotX, y, plotX + plotWidth, y);
@@ -885,30 +979,55 @@ void SpectrumWidget::paintEvent(QPaintEvent * /*event*/)
         painter.setBrush(Qt::NoBrush);
         painter.setPen(QColor(0, 255, 120));
         painter.setFont(QFont("Courier", 8));
-        painter.drawText(plotX + 6, y - 4,
-                         QString("TRACE %1 Hz").arg(m_traceOffsetHz, 0, 'f', 0));
+        const QString caption = (m_traceRadioHz >= 1.0e5)
+            ? QString("%1 MHz").arg(m_traceRadioHz / 1.0e6, 0, 'f', 6)
+            : QString("TRACE %1 Hz").arg(m_traceOffsetHz, 0, 'f', 0);
+        painter.drawText(plotX + 6, y - 4, caption);
         }
     }
 
-    painter.setPen(Qt::white);
-    painter.setFont(QFont("Courier", 8));
-    painter.drawText(plotX - 35, plotY - 5, "Freq");
+    const QFont freqFont = frequencyFont();
+    const QFontMetrics freqFm(freqFont);
+    const QColor freqColor(0xf2, 0xf2, 0xf2);
+    painter.setPen(freqColor);
+    painter.setFont(freqFont);
+    const QRect freqHeader(2, 0, plotX - 8, plotY);
+    painter.drawText(freqHeader, Qt::AlignRight | Qt::AlignBottom, QStringLiteral("Freq"));
 
     if (m_binWidth > 0 && numBins > 0) {
         float lowHz = 0.0f;
         float highHz = 0.0f;
         visibleFrequency(numBins, lowHz, highHz);
-        const float viewSpan = highHz - lowHz;
-        const int mhzDigits = (viewSpan <= 10000.0f) ? 4 : 3;
-        for (int i = 0; i <= 4; ++i) {
-            const int y = plotY + (i * plotHeight) / 4;
-            const float offset_hz = highHz - (static_cast<float>(i) / 4.0f) * viewSpan;
-            const float freq_mhz = (m_centerFrequency + offset_hz) / 1000000.0f;
-            painter.drawText(plotX - 62, y + 4,
+        const float viewSpan = std::max(1.0f, highHz - lowHz);
+        const int mhzDigits = 5;
+        const int rowH = freqFm.height();
+        /* One absolute-MHz label per kilohertz. Five labels across the
+         * whole 48 kHz were about 12 kHz apart. */
+        const float stepHz = 1000.0f;
+        const float first = std::ceil(lowHz / stepHz) * stepHz;
+        const int minGap = rowH + 1;
+        int lastY = -10000;
+        for (float hz = first; hz <= highHz + 0.5f; hz += stepHz) {
+            const float frac = (highHz - hz) / viewSpan;
+            const int y = plotY + static_cast<int>(std::lround(frac * static_cast<float>(plotHeight)));
+            if (y < plotY || y > plotY + plotHeight) {
+                continue;
+            }
+            if (lastY >= plotY && std::abs(y - lastY) < minGap) {
+                continue;
+            }
+            lastY = y;
+            const double freq_mhz = static_cast<double>(rfHzForOffset(hz)) / 1000000.0;
+            const int rowTop = std::max(plotY, std::min(y - rowH / 2,
+                                                         plotY + plotHeight - rowH));
+            const QRect row(2, rowTop, plotX - 8, rowH);
+            painter.drawText(row, Qt::AlignRight | Qt::AlignVCenter,
                              QString::number(freq_mhz, 'f', mhzDigits));
         }
     }
 
+    painter.setPen(Qt::white);
+    painter.setFont(QFont(QStringLiteral("Courier"), 8));
     painter.drawText(plotX + plotWidth - 50, plotY + plotHeight + 20, "Time");
     painter.drawText(plotX + 5, plotY + plotHeight + 20, "Old");
     painter.drawText(plotX + plotWidth - 30, plotY + plotHeight + 20, "New");
@@ -927,9 +1046,10 @@ void SpectrumWidget::paintEvent(QPaintEvent * /*event*/)
 
 void SpectrumWidget::resizeEvent(QResizeEvent *event)
 {
-    const int newScrollWidth = std::max(200, width() - 60);
-    const int plotWidth = std::max(1, width() - 60);
-    const int plotHeight = std::max(1, height() - 60);
+    const QRect plot = plotRect();
+    const int newScrollWidth = std::max(200, plot.width());
+    const int plotWidth = plot.width();
+    const int plotHeight = plot.height();
 
     m_scrollWidth = newScrollWidth;
     while (m_waterfallColumns.size() > m_scrollWidth) {

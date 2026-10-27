@@ -19,6 +19,7 @@
 #include "cw_message_validator.h"
 #include "cw_capture.h"
 #include "decode_worker.h"
+#include "radio_control.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +29,7 @@
 #include <unistd.h>
 #include <complex.h>
 #include <math.h>
+#include <time.h>
 
 
 #ifndef M_PI
@@ -92,6 +94,9 @@ typedef struct cwskimmer_detector {
 
     cwskimmer_monitor_callback monitor_cb;
     void *monitor_userdata;
+    cwskimmer_baseband_callback baseband_cb;
+    void *baseband_userdata;
+    volatile int baseband_tap;
     float monitor_offset_hz;
     int monitor_enabled;
     float monitor_applied_offset;
@@ -122,6 +127,8 @@ typedef struct cwskimmer_detector {
     int replay_collect;
     char replay_decodes[12][64];
     int replay_decode_count;
+
+    radio_control_t *radio_ctl;
 
 } cwskimmer_detector_t; /* full definition */
 
@@ -1351,6 +1358,11 @@ cwskimmer_detector_t *cwskimmer_detector_create(const char *config_file) {
     
     logger_init(detector->config.log_level, detector->config.log_file);
 
+    detector->radio_ctl = radio_control_create();
+    if (detector->radio_ctl) {
+        radio_control_apply_config(detector->radio_ctl, &detector->config);
+    }
+
     if (cw_decoder_global_init() != 0) {
         LOG_ERROR("Failed to initialize ditdah decoder");
         pthread_mutex_destroy(&detector->lock);
@@ -1404,6 +1416,10 @@ void cwskimmer_detector_destroy(cwskimmer_detector_t *detector) {
     if (detector->audio_proc) audio_processor_destroy(detector->audio_proc);
     if (detector->detector) cw_detector_destroy(detector->detector);
     if (detector->radio) tci_client_destroy(detector->radio);
+    if (detector->radio_ctl) {
+        radio_control_destroy(detector->radio_ctl);
+        detector->radio_ctl = NULL;
+    }
     
     pthread_mutex_unlock(&detector->lock);
     pthread_mutex_destroy(&detector->lock);
@@ -1499,6 +1515,59 @@ void cwskimmer_set_monitor_tone(cwskimmer_detector_t *detector,
     detector->monitor_offset_hz = offset_hz;
     detector->monitor_enabled = enabled ? 1 : 0;
     pthread_mutex_unlock(&detector->lock);
+}
+
+void cwskimmer_set_baseband_callback(cwskimmer_detector_t *detector,
+                                     cwskimmer_baseband_callback callback,
+                                     void *userdata) {
+    if (!detector) {
+        return;
+    }
+    pthread_mutex_lock(&detector->lock);
+    detector->baseband_cb = callback;
+    detector->baseband_userdata = userdata;
+    pthread_mutex_unlock(&detector->lock);
+}
+
+void cwskimmer_set_baseband_tap(cwskimmer_detector_t *detector, int enabled) {
+    if (!detector) {
+        return;
+    }
+    /* Volatile store so the detection loop sees the flag without a lock
+     * on every chunk while the Cwsk pane is closed. */
+    detector->baseband_tap = enabled ? 1 : 0;
+}
+
+/*
+ * Hand the same IQ chunk the spectrum FFT is about to consume to the
+ * Cwsk pane. Returns immediately when that pane has the tap off.
+ */
+static void cwskimmer_emit_baseband(cwskimmer_detector_t *detector,
+                                    const float complex *iq, int count) {
+    cwskimmer_baseband_callback cb;
+    void *userdata;
+    int sample_rate;
+    int real_audio;
+
+    if (!detector || !iq || count <= 0 || !detector->baseband_tap) {
+        return;
+    }
+
+    pthread_mutex_lock(&detector->lock);
+    cb = detector->baseband_cb;
+    userdata = detector->baseband_userdata;
+    sample_rate = detector->config.sample_rate;
+    pthread_mutex_unlock(&detector->lock);
+
+    if (!cb || sample_rate <= 0) {
+        return;
+    }
+
+    real_audio = 0;
+    if (detector->radio && tci_stream_is_audio_only(detector->radio)) {
+        real_audio = 1;
+    }
+    cb((const float *)iq, count, sample_rate, real_audio, userdata);
 }
 
 /*
@@ -1887,8 +1956,12 @@ int cwskimmer_start(cwskimmer_detector_t *detector) {
     int read_count = 0;
     struct timespec last_spectrum_emit;
     int have_spectrum_emit = 0;
-    int stream_stall_ticks = 0;
+    struct timespec stream_stall_since;
+    int stream_stall_timing = 0;
     int stream_audio_retried = 0;
+    int stream_stall_warned = 0;
+    struct timespec last_stats_emit;
+    int have_stats_emit = 0;
 
     perf_reset();
     LOG_INFO("Performance profiling enabled — PERF REPORT every 5s in log");
@@ -1901,6 +1974,7 @@ int cwskimmer_start(cwskimmer_detector_t *detector) {
 
         perf_begin(PERF_WS_SERVICE);
         tci_service_websocket();
+        radio_control_service(detector->radio_ctl, detector->radio);
         perf_end(PERF_WS_SERVICE);
 
         if (tci_is_connected(detector->radio)) {
@@ -1915,32 +1989,49 @@ int cwskimmer_start(cwskimmer_detector_t *detector) {
             if (new_samples > 0) {
                 read_count++;
                 detector->samples_processed += new_samples;
-                stream_stall_ticks = 0;
+                stream_stall_timing = 0;
             } else if (detector->samples_processed == 0) {
                 /*
-                 * No binary stream yet. If preference is IQ, retry iq_start once;
-                 * only fall back to audio_start when preference still allows auto
-                 * recovery (IQ mode with silent server). Audio preference: re-send
-                 * audio_start. Loop tick ~2–10ms idle → ~150 ticks ≈ 1–2s.
+                 * No binary frames yet. The installed deskHPSDR answers the
+                 * socket but rejects iq_start, and it does not say so on the
+                 * wire. Wall time, not loop ticks: a blocked service call
+                 * must not postpone this for minutes.
                  */
-                stream_stall_ticks++;
-                if (!stream_audio_retried && stream_stall_ticks == 150) {
+                struct timespec stall_now;
+                double stall_ms;
+
+                clock_gettime(CLOCK_MONOTONIC, &stall_now);
+                if (!stream_stall_timing) {
+                    stream_stall_since = stall_now;
+                    stream_stall_timing = 1;
+                    stall_ms = 0.0;
+                } else {
+                    stall_ms = (double)(stall_now.tv_sec - stream_stall_since.tv_sec) * 1000.0 +
+                               (double)(stall_now.tv_nsec - stream_stall_since.tv_nsec) / 1.0e6;
+                }
+                if (!stream_audio_retried && stall_ms >= 1200.0) {
+                    stream_audio_retried = 1;
                     if (tci_get_stream_mode_preference() == TCI_STREAM_MODE_AUDIO) {
                         LOG_WARN("No TCI stream samples — re-sending audio_start");
                         CONN_DBG("Stream stall: re-send audio_start:0");
                         tci_subscribe_audio_stream(detector->radio, 0);
                     } else {
-                        LOG_WARN("No TCI stream samples after iq_start — "
-                                 "retrying audio_start once (servers without IQ)");
-                        CONN_DBG("Stream stall: retrying audio_start:0");
-                        tci_subscribe_audio_stream(detector->radio, 0);
+                        /*
+                         * Do not replace the 48 kHz IQ spectrum with demodulated
+                         * audio. audio_start is a few kilohertz of receiver audio,
+                         * and that is what collapsed the waterfall.
+                         */
+                        LOG_WARN("No IQ samples after iq_start. Staying on the "
+                                 "48 kHz IQ stream (not audio_start). This "
+                                 "deskHPSDR build is not sending IQ.");
+                        CONN_DBG("Stream stall: keeping iq_start, no audio fallback");
                     }
-                    stream_audio_retried = 1;
-                } else if (stream_stall_ticks == 500) {
+                } else if (!stream_stall_warned && stall_ms >= 5000.0) {
                     LOG_WARN("Still no TCI binary data. Check: radio host/port, "
                              "deskHPSDR CAT→TCI enabled, radio actually receiving, "
                              "Stream: IQ vs Audio button, or play a capture offline.");
                     CONN_DBG("Stream stall persists — connected but no binary frames");
+                    stream_stall_warned = 1;
                 }
             }
 
@@ -1973,6 +2064,7 @@ int cwskimmer_start(cwskimmer_detector_t *detector) {
                     pthread_mutex_unlock(&detector->lock);
                 }
 
+                cwskimmer_emit_baseband(detector, iq_buffer, got);
                 cwskimmer_emit_monitor_audio(detector, iq_buffer, got);
 
                 /* deskHPSDR audio_start vs true IQ — switches single-sided spectrum */
@@ -2161,16 +2253,31 @@ int cwskimmer_start(cwskimmer_detector_t *detector) {
             }
         }
 
-        /* Emit statistics periodically (use independent tick so it fires even when disconnected) */
-        static int stats_tick = 0;
-        if ((++stats_tick % 50) == 0 && detector->stats_cb) {  /* ~every 500ms */
+        /* Emit statistics on the wall clock. A tick count never fires while
+         * lws_service is asleep, so the lamp stayed "Not connected". */
+        {
+            struct timespec stats_now;
+            double stats_ms = 0.0;
+
+            clock_gettime(CLOCK_MONOTONIC, &stats_now);
+            if (have_stats_emit) {
+                stats_ms = (double)(stats_now.tv_sec - last_stats_emit.tv_sec) * 1000.0 +
+                           (double)(stats_now.tv_nsec - last_stats_emit.tv_nsec) / 1.0e6;
+            }
+            if ((!have_stats_emit || stats_ms >= 200.0) && detector->stats_cb) {
+            have_stats_emit = 1;
+            last_stats_emit = stats_now;
             cwskimmer_stats_t stats;
             stats.num_signals = detector->detector ? cw_detector_get_signals(detector->detector, NULL, 0) : 0;
             stats.noise_floor_db = detector->detector ? cw_detector_get_noise_floor(detector->detector) : -120.0f;
             stats.buffer_fill = available;
             stats.connected = detector->radio ? (tci_is_connected(detector->radio) ? 1 : 0) : 0;
+            stats.audio_only = detector->radio && tci_stream_is_audio_only(detector->radio) ? 1 : 0;
             static int last_reported_connected = -1;
             if (stats.connected != last_reported_connected) {
+                LOG_INFO("TCI link %s (buffer=%d samples=%d)",
+                         stats.connected ? "up" : "down",
+                         stats.buffer_fill, detector->samples_processed);
                 CONN_DBG("connection status changed: %s (buffer=%d samples=%d)",
                          stats.connected ? "CONNECTED" : "DISCONNECTED",
                          stats.buffer_fill, detector->samples_processed);
@@ -2194,6 +2301,7 @@ int cwskimmer_start(cwskimmer_detector_t *detector) {
                 detector->stats_cb(&stats, detector->stats_userdata);
             }
             pthread_mutex_unlock(&detector->lock);
+            }
         }
 
         perf_report_if_due(5.0);
@@ -2221,6 +2329,9 @@ int cwskimmer_start(cwskimmer_detector_t *detector) {
 
         perf_end(PERF_LOOP_TOTAL);
     }
+
+    /* The GUI can queue a CW stop as running goes false. Send it before the socket closes. */
+    radio_control_service(detector->radio_ctl, detector->radio);
     
     /* Cleanup sub-resources so cwskimmer_start() can be safely re-invoked after stop (supports GUI Start/Stop cycles).
      * This prevents leaks and pointer overwrites on restart. */
@@ -2294,6 +2405,7 @@ cwskimmer_stats_t cwskimmer_get_stats(cwskimmer_detector_t *detector) {
     if (detector->radio) {
         stats.buffer_fill = tci_buffer_available(detector->radio);
         stats.connected = tci_is_connected(detector->radio) ? 1 : 0;
+        stats.audio_only = tci_stream_is_audio_only(detector->radio) ? 1 : 0;
     }
     stats.samples_processed = detector->samples_processed;
     stats.cpu_usage = 8.5f;  /* Placeholder */
@@ -2365,6 +2477,31 @@ int cwskimmer_config_set(cwskimmer_detector_t *detector,
         detector->config.training_file[sizeof(detector->config.training_file) - 1] = '\0';
         LOG_INFO("training_file → %s",
                  detector->config.training_file[0] ? detector->config.training_file : "(live radio)");
+    } else if (strcmp(key, "cw_send") == 0) {
+        strncpy(detector->config.cw_send, value, sizeof(detector->config.cw_send) - 1);
+        detector->config.cw_send[sizeof(detector->config.cw_send) - 1] = '\0';
+        if (detector->radio_ctl) {
+            radio_control_apply_config(detector->radio_ctl, &detector->config);
+        }
+    } else if (strcmp(key, "cw_wpm") == 0) {
+        detector->config.cw_wpm = atoi(value);
+        if (detector->radio_ctl) {
+            radio_control_set_wpm(detector->radio_ctl, detector->config.cw_wpm);
+        }
+    } else if (strcmp(key, "cat_host") == 0) {
+        strncpy(detector->config.cat_host, value, sizeof(detector->config.cat_host) - 1);
+        detector->config.cat_host[sizeof(detector->config.cat_host) - 1] = '\0';
+        if (detector->radio_ctl) {
+            radio_control_apply_config(detector->radio_ctl, &detector->config);
+        }
+    } else if (strcmp(key, "cat_port") == 0) {
+        detector->config.cat_port = atoi(value);
+        if (detector->radio_ctl) {
+            radio_control_apply_config(detector->radio_ctl, &detector->config);
+        }
+    } else if (strcmp(key, "iq_conjugate") == 0) {
+        detector->config.iq_conjugate = atoi(value) ? 1 : 0;
+        LOG_INFO("iq_conjugate → %d", detector->config.iq_conjugate);
     } else if (strcmp(key, "tci_stream_mode") == 0) {
         int want_audio = (strcasecmp(value, "audio") == 0);
         tci_stream_mode_t mode = want_audio ? TCI_STREAM_MODE_AUDIO : TCI_STREAM_MODE_IQ;
@@ -2434,6 +2571,8 @@ const char *cwskimmer_config_get(cwskimmer_detector_t *detector,
         snprintf(buffer, sizeof(buffer), "%d", detector->config.spectrum_span_hz);
     } else if (strcmp(key, "multi_decode_channels") == 0) {
         snprintf(buffer, sizeof(buffer), "%d", detector->config.multi_decode_channels);
+    } else if (strcmp(key, "iq_conjugate") == 0) {
+        snprintf(buffer, sizeof(buffer), "%d", detector->config.iq_conjugate ? 1 : 0);
     } else if (strcmp(key, "tci_stream_mode") == 0) {
         snprintf(buffer, sizeof(buffer), "%s",
                  detector->config.tci_stream_mode[0]
@@ -2441,6 +2580,15 @@ const char *cwskimmer_config_get(cwskimmer_detector_t *detector,
                      : "iq");
     } else if (strcmp(key, "training_file") == 0) {
         snprintf(buffer, sizeof(buffer), "%s", detector->config.training_file);
+    } else if (strcmp(key, "cw_send") == 0) {
+        snprintf(buffer, sizeof(buffer), "%s",
+                 detector->config.cw_send[0] ? detector->config.cw_send : "tci");
+    } else if (strcmp(key, "cw_wpm") == 0) {
+        snprintf(buffer, sizeof(buffer), "%d", detector->config.cw_wpm);
+    } else if (strcmp(key, "cat_host") == 0) {
+        snprintf(buffer, sizeof(buffer), "%s", detector->config.cat_host);
+    } else if (strcmp(key, "cat_port") == 0) {
+        snprintf(buffer, sizeof(buffer), "%d", detector->config.cat_port);
     } else {
         pthread_mutex_unlock(&detector->lock);
         return NULL;
@@ -2448,6 +2596,61 @@ const char *cwskimmer_config_get(cwskimmer_detector_t *detector,
     
     pthread_mutex_unlock(&detector->lock);
     return buffer;
+}
+
+int cwskimmer_tune_hz(cwskimmer_detector_t *detector, long long hz)
+{
+    if (!detector || !detector->radio_ctl) {
+        return -1;
+    }
+    return radio_control_tune(detector->radio_ctl, hz);
+}
+
+int cwskimmer_cw_send(cwskimmer_detector_t *detector, const char *text)
+{
+    if (!detector || !detector->radio_ctl) {
+        return -1;
+    }
+    return radio_control_cw_text(detector->radio_ctl, text);
+}
+
+int cwskimmer_cw_stop(cwskimmer_detector_t *detector)
+{
+    if (!detector || !detector->radio_ctl) {
+        return -1;
+    }
+    return radio_control_cw_stop(detector->radio_ctl);
+}
+
+int cwskimmer_cw_set_wpm(cwskimmer_detector_t *detector, int wpm)
+{
+    if (!detector || !detector->radio_ctl) {
+        return -1;
+    }
+    if (wpm < 5) {
+        wpm = 5;
+    }
+    if (wpm > 60) {
+        wpm = 60;
+    }
+    pthread_mutex_lock(&detector->lock);
+    detector->config.cw_wpm = wpm;
+    pthread_mutex_unlock(&detector->lock);
+    return radio_control_set_wpm(detector->radio_ctl, wpm);
+}
+
+int cwskimmer_cw_send_mode(cwskimmer_detector_t *detector, char *out, int out_max)
+{
+    const char *mode;
+
+    if (!out || out_max < 4) {
+        return -1;
+    }
+    mode = (detector && detector->radio_ctl)
+               ? radio_control_send_mode(detector->radio_ctl)
+               : "tci";
+    snprintf(out, (size_t)out_max, "%s", mode);
+    return 0;
 }
 
 int cwskimmer_freeze_capture(cwskimmer_detector_t *detector)

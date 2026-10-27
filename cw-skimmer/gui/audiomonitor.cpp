@@ -52,7 +52,11 @@ AudioMonitor::AudioMonitor(QObject *parent)
     m_volumeSlider->setValue(80);
     m_volumeSlider->setFixedWidth(90);
     m_volumeSlider->setToolTip(QStringLiteral("Trace audio volume: 80%"));
-    populateDevices();
+    /* Device enumeration talks to PipeWire and can stall the GUI thread.
+     * The window is shown first; the list fills on the next event-loop turn. */
+    m_combo->addItem(QStringLiteral("Detecting outputs…"));
+    m_combo->setEnabled(false);
+    QTimer::singleShot(200, this, [this]() { populateDevices(); });
     connect(m_combo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &AudioMonitor::onDeviceChanged);
     connect(m_volumeSlider, &QSlider::valueChanged, this, &AudioMonitor::onVolumeChanged);

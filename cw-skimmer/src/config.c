@@ -31,8 +31,13 @@ void config_defaults(config_t *config) {
     strcpy(config->log_file, "cw-skimmer.log");
     config->spectrum_span_hz = 0;  /* 0 = full-band wide (production default) */
     strcpy(config->tci_stream_mode, "iq");  /* iq | audio */
+    config->iq_conjugate = 0;
     config->multi_decode_channels = 48;
     config->training_file[0] = '\0';
+    strcpy(config->cw_send, "tci");
+    config->cw_wpm = 20;
+    strcpy(config->cat_host, "127.0.0.1");
+    config->cat_port = 0;
 }
 
 static char *trim_string(char *str) {
@@ -88,6 +93,9 @@ int config_load(const char *path, config_t *config) {
             strncpy(config->tci_stream_mode, value, sizeof(config->tci_stream_mode) - 1);
             config->tci_stream_mode[sizeof(config->tci_stream_mode) - 1] = '\0';
         }
+        else if (strcmp(key, "iq_conjugate") == 0) {
+            config->iq_conjugate = atoi(value) ? 1 : 0;
+        }
         else if (strcmp(key, "multi_decode_channels") == 0) {
             int n = atoi(value);
             if (n < 1) n = 1;
@@ -97,6 +105,20 @@ int config_load(const char *path, config_t *config) {
         else if (strcmp(key, "training_file") == 0) {
             strncpy(config->training_file, value, sizeof(config->training_file) - 1);
             config->training_file[sizeof(config->training_file) - 1] = '\0';
+        }
+        else if (strcmp(key, "cw_send") == 0) {
+            strncpy(config->cw_send, value, sizeof(config->cw_send) - 1);
+            config->cw_send[sizeof(config->cw_send) - 1] = '\0';
+        }
+        else if (strcmp(key, "cw_wpm") == 0) {
+            config->cw_wpm = atoi(value);
+        }
+        else if (strcmp(key, "cat_host") == 0) {
+            strncpy(config->cat_host, value, sizeof(config->cat_host) - 1);
+            config->cat_host[sizeof(config->cat_host) - 1] = '\0';
+        }
+        else if (strcmp(key, "cat_port") == 0) {
+            config->cat_port = atoi(value);
         }
     }
     

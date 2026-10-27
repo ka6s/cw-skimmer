@@ -58,6 +58,8 @@ bool DetectorWorker::initialize()
     cwskimmer_set_spectrum_callback(m_detector, spectrumCallbackStatic, this);
     cwskimmer_set_decode_callback(m_detector, decodeCallbackStatic, this);
     cwskimmer_set_log_callback(m_detector, logCallbackStatic, this);
+    cwskimmer_set_baseband_callback(m_detector, basebandCallbackStatic, this);
+    cwskimmer_set_baseband_tap(m_detector, 0);
 
     return true;
 }
@@ -382,7 +384,8 @@ void DetectorWorker::onStatsUpdated(const cwskimmer_stats_t *stats)
                       stats->avg_peak_snr_db, stats->peak_snr_db,
                       stats->spectrum_peak_count, stats->buffer_fill,
                       stats->connected != 0, stats->samples_processed,
-                      stats->cpu_usage, stats->queue_size);
+                      stats->cpu_usage, stats->queue_size,
+                      stats->audio_only != 0);
 }
 
 void DetectorWorker::onSpectrumUpdated(const cwskimmer_spectrum_t *spectrum)
@@ -440,6 +443,66 @@ void DetectorWorker::setMonitorTone(float offsetHz, bool enabled)
     if (m_detector) {
         cwskimmer_set_monitor_tone(m_detector, offsetHz, enabled ? 1 : 0);
     }
+}
+
+void DetectorWorker::setBasebandTap(bool enabled)
+{
+    if (m_detector) {
+        cwskimmer_set_baseband_tap(m_detector, enabled ? 1 : 0);
+    }
+}
+
+int DetectorWorker::tuneHz(long long hz)
+{
+    if (!m_detector) {
+        return -1;
+    }
+    return cwskimmer_tune_hz(m_detector, hz);
+}
+
+void DetectorWorker::cwSend(const QString &text)
+{
+    if (!m_detector) {
+        return;
+    }
+    const QByteArray bytes = text.toLatin1();
+    cwskimmer_cw_send(m_detector, bytes.constData());
+}
+
+void DetectorWorker::cwStop()
+{
+    if (m_detector) {
+        cwskimmer_cw_stop(m_detector);
+    }
+}
+
+void DetectorWorker::setCwWpm(int wpm)
+{
+    if (m_detector) {
+        cwskimmer_cw_set_wpm(m_detector, wpm);
+    }
+}
+
+QString DetectorWorker::cwSendMode() const
+{
+    char mode[16];
+    mode[0] = '\0';
+    if (!m_detector || cwskimmer_cw_send_mode(m_detector, mode, (int)sizeof(mode)) != 0) {
+        return QStringLiteral("tci");
+    }
+    return QString::fromLatin1(mode);
+}
+
+void DetectorWorker::basebandCallbackStatic(const float *iq, int count, int sample_rate,
+                                           int real_audio, void *userdata)
+{
+    DetectorWorker *self = static_cast<DetectorWorker *>(userdata);
+    if (!self || !self->m_acceptCallbacks.load() || !iq || count <= 0 || sample_rate <= 0) {
+        return;
+    }
+    QByteArray bytes(reinterpret_cast<const char *>(iq),
+                     count * 2 * static_cast<int>(sizeof(float)));
+    emit self->basebandReady(bytes, sample_rate, real_audio != 0);
 }
 
 void DetectorWorker::onDecodeUpdated(const cwskimmer_decode_t *decode)

@@ -38,11 +38,12 @@ The TCI radio application has to be listening on that host and port before **Sta
 
 1. Press **Start**.
 2. The lamp turns green **Connected** while the session is up and detection is running. Dark red **Not connected** means it is not.
-3. The status bar shows RUNNING and the center frequency. The spectrum mode label is WIDE.
+3. The status bar shows RUNNING. After a signal is selected, **RF** is the green trace frequency. On IQ that is the radio center minus the trace offset. The spectrum mode label is WIDE.
 4. The waterfall moves. Ten kilohertz are visible, centered on the VFO until you scroll.
 5. A signal at least 16 dB above the noise can take its 1 kHz slice. Text appears on that trace, newest character on the right.
-6. Click the trace. The signal-trace window opens, the bottom Morse pane shows the same text, and both keep decoding.
-7. **Stop** ends the session. The lamp goes dark red.
+6. Click the trace. The bottom Morse pane shows the same text, and both keep decoding. The signal-trace window opens unless the decoder is DeepCW. The radio dial moves to that signal. The green line stays on the click until the dial arrives. The station is then the center bin, and the line and the decoder move there.
+7. The CW keyboard under the Morse decoder transmits. Type only when you mean to send. **Stop** on that keyboard aborts the send. The radio should already be in CW.
+8. **Stop** on the toolbar ends the session. The lamp goes dark red.
 
 ## Training playback
 

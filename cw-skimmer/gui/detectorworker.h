@@ -16,6 +16,7 @@
 #include <QString>
 #include <QVector>
 #include <QMetaType>
+#include <QByteArray>
 #include <QElapsedTimer>
 #include <QMutex>
 #include <pthread.h>
@@ -47,6 +48,18 @@ public:
                      const QString &expectedText, const QString &notes);
     /** Spectrum offset to play on the audio monitor. Safe from the GUI thread. */
     void setMonitorTone(float offsetHz, bool enabled);
+    /** Copy radio samples to the GUI only while the Cwsk pane is selected. */
+    void setBasebandTap(bool enabled);
+    /** Queue a radio tune. Safe from the GUI thread. 0 on accept. */
+    int tuneHz(long long hz);
+    /** Queue CW text for the radio keyer. Safe from the GUI thread. */
+    void cwSend(const QString &text);
+    /** Abort queued CW. Safe from the GUI thread. */
+    void cwStop();
+    /** Keyer speed, 5–60 WPM. Safe from the GUI thread. */
+    void setCwWpm(int wpm);
+    /** "tci" or "ky". */
+    QString cwSendMode() const;
 
 public slots:
     /** Must be invoked on the worker thread. */
@@ -62,11 +75,14 @@ signals:
     void spotReported(QString callsign, float frequency, float snr, float confidence);
     void statsUpdated(int numSignals, float noiseFloor, float avgPeakSnr, float peakSnr,
                       int spectrumPeakCount, int bufferFill, bool connected,
-                      int samplesProcessed, float cpuUsage, int queueSize);
+                      int samplesProcessed, float cpuUsage, int queueSize,
+                      bool audioOnly);
     void spectrumColumnsReady(QVector<QVector<float>> columns, float centerFreq, float binWidth);
     void decodeUpdated(QString decodedText, float frequencyHz,
                        float freqOffsetHz, float confidence);
     void monitorPcmReady(QByteArray pcm);
+    /** Interleaved I,Q. count complex samples, valid for this signal only. */
+    void basebandReady(QByteArray iq, int sampleRate, bool realAudio);
     void logMessage(QString message, int level);
     void errorOccurred(QString error);
     void statusChanged(bool running);
@@ -79,6 +95,8 @@ private:
     static void spectrumCallbackStatic(const cwskimmer_spectrum_t *spectrum, void *userdata);
     static void decodeCallbackStatic(const cwskimmer_decode_t *decode, void *userdata);
     static void monitorCallbackStatic(const int16_t *pcm, int sample_count, void *userdata);
+    static void basebandCallbackStatic(const float *iq, int count, int sample_rate,
+                                       int real_audio, void *userdata);
     static void logCallbackStatic(const char *message, int level, void *userdata);
 
     void runDetectionLoop();
