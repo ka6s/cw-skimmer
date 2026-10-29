@@ -1,17 +1,23 @@
+#ifdef _WIN32
+#include "win_compat.h"
+#endif
+
 #include "spot_reporter.h"
 #include "logger.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <errno.h>
+#include <time.h>
+#ifndef _WIN32
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <fcntl.h>
-#include <errno.h>
-#include <time.h>
 #include <poll.h>
+#endif
 
 #define RETRY_QUEUE_MAX 1000
 #define SPOT_CONNECT_TIMEOUT_MS 100
@@ -28,6 +34,55 @@ static int spot_queue_spot(spot_reporter_t *reporter, const spot_t *spot)
     reporter->queue_size++;
     LOG_DEBUG("Spot queued for retry (queue size: %d)", reporter->queue_size);
     return 0;
+}
+
+#ifdef _WIN32
+static void spot_close_fd(int fd)
+{
+    if (fd >= 0) {
+        closesocket((SOCKET)fd);
+    }
+}
+
+static int spot_connect_socket(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
+{
+    u_long on = 1;
+    int rc;
+
+    if (ioctlsocket((SOCKET)sockfd, FIONBIO, &on) != 0) {
+        return -1;
+    }
+    rc = connect(sockfd, addr, addrlen);
+    if (rc == 0) {
+        return 0;
+    }
+    if (WSAGetLastError() != WSAEWOULDBLOCK && WSAGetLastError() != WSAEINPROGRESS) {
+        return -1;
+    }
+    {
+        WSAPOLLFD pfd;
+        int so_error = 0;
+        int so_len = (int)sizeof(so_error);
+        pfd.fd = (SOCKET)sockfd;
+        pfd.events = POLLOUT;
+        pfd.revents = 0;
+        rc = WSAPoll(&pfd, 1, SPOT_CONNECT_TIMEOUT_MS);
+        if (rc <= 0) {
+            return -1;
+        }
+        if (getsockopt((SOCKET)sockfd, SOL_SOCKET, SO_ERROR, (char *)&so_error, &so_len) != 0
+            || so_error != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+#else
+static void spot_close_fd(int fd)
+{
+    if (fd >= 0) {
+        close(fd);
+    }
 }
 
 static int spot_connect_socket(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
@@ -76,6 +131,7 @@ static int spot_connect_socket(int sockfd, const struct sockaddr *addr, socklen_
     (void)fcntl(sockfd, F_SETFL, flags);
     return 0;
 }
+#endif
 
 spot_reporter_t *spot_reporter_create(const char *host, int port, const char *callsign) {
     spot_reporter_t *reporter = malloc(sizeof(spot_reporter_t));
@@ -123,7 +179,7 @@ int spot_reporter_connect(spot_reporter_t *reporter) {
         struct hostent *he = gethostbyname(reporter->host);
         if (!he) {
             LOG_ERROR("Failed to resolve host: %s", reporter->host);
-            close(reporter->socket_fd);
+            spot_close_fd(reporter->socket_fd);
             reporter->socket_fd = -1;
             return -1;
         }
@@ -133,14 +189,18 @@ int spot_reporter_connect(spot_reporter_t *reporter) {
     if (spot_connect_socket(reporter->socket_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         LOG_WARN("Connection to spot server failed: %s:%d (%s)",
                  reporter->host, reporter->port, strerror(errno));
-        close(reporter->socket_fd);
+        spot_close_fd(reporter->socket_fd);
         reporter->socket_fd = -1;
         return -1;
     }
-    
-    // Set non-blocking mode
-    int flags = fcntl(reporter->socket_fd, F_GETFL, 0);
-    fcntl(reporter->socket_fd, F_SETFL, flags | O_NONBLOCK);
+
+#ifndef _WIN32
+    /* Windows connect path above already left the socket non-blocking. */
+    {
+        int flags = fcntl(reporter->socket_fd, F_GETFL, 0);
+        fcntl(reporter->socket_fd, F_SETFL, flags | O_NONBLOCK);
+    }
+#endif
     
     reporter->connected = 1;
     LOG_INFO("Connected to spot server at %s:%d", reporter->host, reporter->port);
@@ -174,10 +234,19 @@ int spot_reporter_submit_spot(spot_reporter_t *reporter, const spot_t *spot) {
              tm_info->tm_min,
              tm_info->tm_sec);
     
+#ifdef _WIN32
+    int bytes_sent = send((SOCKET)reporter->socket_fd, message, (int)strlen(message), MSG_DONTWAIT);
+#else
     int bytes_sent = send(reporter->socket_fd, message, strlen(message), MSG_DONTWAIT);
+#endif
     
     if (bytes_sent < 0) {
+#ifdef _WIN32
+        int werr = WSAGetLastError();
+        if (werr != WSAEWOULDBLOCK && werr != WSAEINPROGRESS) {
+#else
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
+#endif
             LOG_WARN("Failed to send spot: %s", strerror(errno));
             reporter->connected = 0;
             
@@ -241,7 +310,7 @@ int spot_reporter_reconnect(spot_reporter_t *reporter) {
     if (!reporter) return -1;
     
     if (reporter->socket_fd >= 0) {
-        close(reporter->socket_fd);
+        spot_close_fd(reporter->socket_fd);
         reporter->socket_fd = -1;
     }
     
@@ -258,7 +327,7 @@ void spot_reporter_destroy(spot_reporter_t *reporter) {
     if (!reporter) return;
     
     if (reporter->socket_fd >= 0) {
-        close(reporter->socket_fd);
+        spot_close_fd(reporter->socket_fd);
     }
     
     if (reporter->retry_queue) {

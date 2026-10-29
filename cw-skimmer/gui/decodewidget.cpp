@@ -4,6 +4,7 @@
  */
 
 #include "decodewidget.h"
+#include "spectrumwidget.h"
 #include "cwcopyformat.h"
 #include "../src/cw_message_validator.h"
 #include <QPainter>
@@ -124,9 +125,7 @@ void DecodeWidget::setFrequencyView(float lowHz, float spanHz)
 
 int DecodeWidget::fitCharsForWidth() const
 {
-    QFont textFont(QStringLiteral("Courier New"));
-    textFont.setStyleHint(QFont::Monospace);
-    textFont.setPointSize(11);
+    const QFont textFont = SpectrumWidget::frequencyLabelFont();
     const int charW = std::max(1, QFontMetrics(textFont).horizontalAdvance(QLatin1Char('M')));
     return std::max(4, (width() - 8) / charW);
 }
@@ -350,41 +349,69 @@ void DecodeWidget::paintEvent(QPaintEvent * /*event*/)
     QPainter painter(this);
     painter.fillRect(rect(), QColor(0x10, 0x10, 0x10));
 
+    const QFont textFont = SpectrumWidget::frequencyLabelFont();
     if (m_lines.isEmpty()) {
         painter.setPen(QColor(0x88, 0x88, 0x88));
-        painter.setFont(QFont(QStringLiteral("Courier New"), 11));
+        painter.setFont(textFont);
         painter.drawText(8, kPlotTop + 8, "Copy appears on each CW trace.");
         return;
     }
 
-    QFont textFont(QStringLiteral("Courier New"));
-    textFont.setStyleHint(QFont::Monospace);
-    textFont.setPointSize(11);
     const QFontMetrics textFm(textFont);
     const int charW = std::max(1, textFm.horizontalAdvance(QLatin1Char('M')));
-    const int lineHeight = textFm.height() + 2;
+    const int rowH = textFm.height();
     const int textX = 4;
     const int fitChars = std::max(4, (width() - textX - 4) / charW);
     const int plotY = kPlotTop;
-    const int plotBottom = height() - kPlotBottomMargin;
+    const int plotHeight = std::max(1, height() - kPlotTop - kPlotBottomMargin);
+    const int plotBottom = plotY + plotHeight;
+    const float viewHigh = m_viewLowHz + m_viewSpanHz;
+    const float viewSpan = std::max(1.0f, m_viewSpanHz);
     const int fromEnd = (m_textScrollBar && m_textScrollBar->maximum() > 0)
                             ? (m_textScrollBar->maximum() - m_textScrollBar->value())
                             : 0;
-    for (const DecodeLine &line : m_lines) {
+
+    /* One row per kilohertz, on the same Y as the frequency label. A second
+     * decode that lands in that kilohertz keeps the stronger one. */
+    QVector<int> rowLine;
+    QVector<float> rowHz;
+    for (int i = 0; i < m_lines.size(); ++i) {
+        const DecodeLine &line = m_lines[i];
         if (line.text.isEmpty()) {
             continue;
         }
         const float displayHz = line.freqOffsetHz - m_pictureOriginHz;
-        if (m_viewSpanHz > 1.0f
-            && (displayHz < m_viewLowHz
-                || displayHz > m_viewLowHz + m_viewSpanHz)) {
+        const float snapped = std::floor(displayHz / 1000.0f) * 1000.0f;
+        if (m_viewSpanHz > 1.0f && (snapped < m_viewLowHz || snapped > viewHigh)) {
             continue;
         }
-        const int yCenter = offsetToY(line.freqOffsetHz);
+        int existing = -1;
+        for (int r = 0; r < rowHz.size(); ++r) {
+            if (std::fabs(rowHz[r] - snapped) < 0.5f) {
+                existing = r;
+                break;
+            }
+        }
+        if (existing < 0) {
+            rowHz.append(snapped);
+            rowLine.append(i);
+        } else if (line.confidence > m_lines[rowLine[existing]].confidence) {
+            rowLine[existing] = i;
+        }
+    }
+
+    for (int r = 0; r < rowLine.size(); ++r) {
+        const DecodeLine &line = m_lines[rowLine[r]];
+        const float frac = (m_viewSpanHz > 1.0f)
+                               ? (viewHigh - rowHz[r]) / viewSpan
+                               : 0.0f;
+        const int yCenter = (m_viewSpanHz > 1.0f)
+                                ? static_cast<int>(std::lround(plotY + frac * static_cast<float>(plotHeight)))
+                                : offsetToY(rowHz[r] + m_pictureOriginHz);
         if (yCenter < plotY || yCenter > plotBottom) {
             continue;
         }
-        const int rowTop = yCenter - lineHeight / 2;
+        const int rowTop = std::max(plotY, std::min(yCenter - rowH / 2, plotBottom - rowH));
 
         /* The stored line is the buffer. This paints one window into it,
          * newest character in the rightmost column unless the bar is scrolled back. */
@@ -419,7 +446,7 @@ void DecodeWidget::paintEvent(QPaintEvent * /*event*/)
                 ++j;
             }
             painter.setPen(cols[i]);
-            const QRect run(textX + i * charW, rowTop, (j - i) * charW, lineHeight);
+            const QRect run(textX + i * charW, rowTop, (j - i) * charW, rowH);
             painter.drawText(run, Qt::AlignLeft | Qt::AlignVCenter | Qt::TextDontClip,
                              field.mid(i, j - i));
             i = j;

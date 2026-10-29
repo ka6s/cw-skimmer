@@ -37,19 +37,23 @@ int columnDisplayX(int colIndex, int totalCols, int plotWidth)
 
 QFont frequencyFont()
 {
-    /* Same face and size as the Morse copy beside the waterfall. */
-    QFont font(QStringLiteral("Courier New"), 11);
-    font.setStyleHint(QFont::Monospace);
-    return font;
+    return SpectrumWidget::frequencyLabelFont();
 }
 
 int frequencyColumnWidth()
 {
-    /* Five decimal places, wide enough for 1000s of MHz: "0000.00000". */
-    return QFontMetrics(frequencyFont()).horizontalAdvance(QStringLiteral("0000.00000"));
+    /* Megahertz to 1 kHz: "0000.000". */
+    return QFontMetrics(frequencyFont()).horizontalAdvance(QStringLiteral("0000.000"));
 }
 
 }  // namespace
+
+QFont SpectrumWidget::frequencyLabelFont()
+{
+    QFont font(QStringLiteral("Courier New"), 11);
+    font.setStyleHint(QFont::Monospace);
+    return font;
+}
 
 SpectrumWidget::SpectrumWidget(QWidget *parent)
     : QWidget(parent)
@@ -999,10 +1003,9 @@ void SpectrumWidget::paintEvent(QPaintEvent * /*event*/)
         float highHz = 0.0f;
         visibleFrequency(numBins, lowHz, highHz);
         const float viewSpan = std::max(1.0f, highHz - lowHz);
-        const int mhzDigits = 5;
         const int rowH = freqFm.height();
-        /* One absolute-MHz label per kilohertz. Five labels across the
-         * whole 48 kHz were about 12 kHz apart. */
+        /* One label per kilohertz. Three decimal MHz is 1 kHz; finer digits
+         * are below that row. */
         const float stepHz = 1000.0f;
         const float first = std::ceil(lowHz / stepHz) * stepHz;
         const int minGap = rowH + 1;
@@ -1017,12 +1020,13 @@ void SpectrumWidget::paintEvent(QPaintEvent * /*event*/)
                 continue;
             }
             lastY = y;
-            const double freq_mhz = static_cast<double>(rfHzForOffset(hz)) / 1000000.0;
+            const double rf = static_cast<double>(rfHzForOffset(hz));
+            const double freq_mhz = std::round(rf / 1000.0) / 1000.0;
             const int rowTop = std::max(plotY, std::min(y - rowH / 2,
                                                          plotY + plotHeight - rowH));
             const QRect row(2, rowTop, plotX - 8, rowH);
             painter.drawText(row, Qt::AlignRight | Qt::AlignVCenter,
-                             QString::number(freq_mhz, 'f', mhzDigits));
+                             QString::number(freq_mhz, 'f', 3));
         }
     }
 

@@ -2,6 +2,10 @@
 #define _DEFAULT_SOURCE
 #endif
 
+#ifdef _WIN32
+#include "win_compat.h"
+#endif
+
 #include "tci_client.h"
 #include "tci_stream.h"
 #include "logger.h"
@@ -15,6 +19,7 @@
 #include <libwebsockets.h>
 #include <errno.h>
 #include <pthread.h>
+#ifndef _WIN32
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -23,12 +28,25 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <poll.h>
+#endif
 #include <time.h>
 
 /* usleep declaration for strict C99 (-std=c99) builds where unistd may hide it without _BSD_SOURCE */
 #if !defined(_BSD_SOURCE) && !defined(_DEFAULT_SOURCE) && !defined(_XOPEN_SOURCE)
 int usleep(unsigned int __useconds);
 #endif
+
+static void tci_close_socket(int fd)
+{
+    if (fd < 0) {
+        return;
+    }
+#ifdef _WIN32
+    closesocket((SOCKET)fd);
+#else
+    close(fd);
+#endif
+}
 
 #define IQ_BUFFER_SIZE 480000
 #define TCI_TCP_CONNECT_TIMEOUT_MS 5000
@@ -679,10 +697,10 @@ static int tci_probe_host_port(const char *host, int port) {
         }
         if (tci_tcp_connect_socket(sockfd, rp->ai_addr, (socklen_t)rp->ai_addrlen) == 0) {
             reachable = 0;
-            close(sockfd);
+            tci_close_socket(sockfd);
             break;
         }
-        close(sockfd);
+        tci_close_socket(sockfd);
         sockfd = -1;
     }
 
@@ -691,6 +709,40 @@ static int tci_probe_host_port(const char *host, int port) {
 }
 
 static int tci_tcp_connect_socket(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+#ifdef _WIN32
+    u_long on = 1;
+    int rc;
+
+    if (ioctlsocket((SOCKET)sockfd, FIONBIO, &on) != 0) {
+        return -1;
+    }
+    rc = connect((SOCKET)sockfd, addr, (int)addrlen);
+    if (rc == 0) {
+        return 0;
+    }
+    {
+        int werr = WSAGetLastError();
+        WSAPOLLFD pfd;
+        int so_error = 0;
+        int so_len = (int)sizeof(so_error);
+
+        if (werr != WSAEWOULDBLOCK && werr != WSAEINPROGRESS) {
+            return -1;
+        }
+        pfd.fd = (SOCKET)sockfd;
+        pfd.events = POLLOUT;
+        pfd.revents = 0;
+        rc = WSAPoll(&pfd, 1, TCI_TCP_CONNECT_TIMEOUT_MS);
+        if (rc <= 0) {
+            return -1;
+        }
+        if (getsockopt((SOCKET)sockfd, SOL_SOCKET, SO_ERROR, (char *)&so_error, &so_len) != 0
+            || so_error != 0) {
+            return -1;
+        }
+    }
+    return 0;
+#else
     int flags;
     int rc;
 
@@ -735,6 +787,7 @@ static int tci_tcp_connect_socket(int sockfd, const struct sockaddr *addr, sockl
 
     (void)fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
     return 0;
+#endif
 }
 
 static void tci_tcp_context_free(void) {
@@ -812,7 +865,7 @@ static int tci_tcp_connect(tci_client_t *client) {
         }
         CONN_DBG("TCP connect attempt failed for %s:%d (%s)",
                  client->host, client->port, strerror(errno));
-        close(sockfd);
+        tci_close_socket(sockfd);
         sockfd = -1;
     }
 
@@ -826,7 +879,11 @@ static int tci_tcp_connect(tci_client_t *client) {
 
     {
         int yes = 1;
+#ifdef _WIN32
+        (void)setsockopt((SOCKET)sockfd, IPPROTO_TCP, TCP_NODELAY, (const char *)&yes, (int)sizeof(yes));
+#else
         (void)setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+#endif
     }
 
     client->socket_fd = sockfd;
@@ -975,7 +1032,11 @@ static int tci_tcp_send_command(tci_client_t *client, const char *command) {
     }
 
     {
+#ifdef _WIN32
+        ssize_t sent = send((SOCKET)client->socket_fd, buffer, (int)len, MSG_NOSIGNAL);
+#else
         ssize_t sent = send(client->socket_fd, buffer, len, MSG_NOSIGNAL);
+#endif
         if (sent < 0 || (size_t)sent != len) {
             LOG_ERROR("Failed to send TCP command: %s", command);
             CONN_DBG("FAILED to send TCP command: %s", command);
@@ -1134,7 +1195,9 @@ static void tci_training_service(tci_client_t *client) {
 static void tci_tcp_service(tci_client_t *client) {
     unsigned char chunk[8192];
     ssize_t n;
+#ifndef _WIN32
     struct pollfd pfd;
+#endif
 
     if (!client || !g_tcp_context || !client->connected) {
         return;
@@ -1149,6 +1212,18 @@ static void tci_tcp_service(tci_client_t *client) {
         return;
     }
 
+#ifdef _WIN32
+    {
+        WSAPOLLFD wpfd;
+        wpfd.fd = (SOCKET)client->socket_fd;
+        wpfd.events = POLLIN;
+        wpfd.revents = 0;
+        if (WSAPoll(&wpfd, 1, 0) <= 0) {
+            return;
+        }
+    }
+    n = recv((SOCKET)client->socket_fd, (char *)chunk, (int)sizeof(chunk), 0);
+#else
     pfd.fd = client->socket_fd;
     pfd.events = POLLIN;
     if (poll(&pfd, 1, 0) <= 0) {
@@ -1156,15 +1231,23 @@ static void tci_tcp_service(tci_client_t *client) {
     }
 
     n = recv(client->socket_fd, chunk, sizeof(chunk), 0);
+#endif
     if (n == 0) {
         CONN_DBG("TCP connection closed by peer %s:%d", client->host, client->port);
         client->connected = 0;
         return;
     }
     if (n < 0) {
+#ifdef _WIN32
+        int werr = WSAGetLastError();
+        if (werr == WSAEWOULDBLOCK || werr == WSAEINPROGRESS) {
+            return;
+        }
+#else
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return;
         }
+#endif
         CONN_DBG("TCP recv error on %s:%d: %s", client->host, client->port, strerror(errno));
         client->connected = 0;
         return;
@@ -1520,7 +1603,7 @@ void tci_client_disconnect(tci_client_t *client) {
     }
 
     if (client->socket_fd >= 0) {
-        close(client->socket_fd);
+        tci_close_socket(client->socket_fd);
         client->socket_fd = -1;
     }
 

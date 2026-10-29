@@ -2,6 +2,10 @@
 #define _DEFAULT_SOURCE
 #endif
 
+#ifdef _WIN32
+#include "win_compat.h"
+#endif
+
 #include "radio_control.h"
 #include "tci_client.h"
 #include "config.h"
@@ -9,17 +13,19 @@
 
 #include <ctype.h>
 #include <errno.h>
-#include <fcntl.h>
-#include <netdb.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
+#ifndef _WIN32
+#include <fcntl.h>
+#include <netdb.h>
+#include <sys/socket.h>
 #include <poll.h>
+#endif
 
 #define RC_QUEUE 32
 #define RC_TEXT 360
@@ -227,7 +233,11 @@ int radio_control_ky_status(const char *line)
 static void rc_ky_close(radio_control_t *rc)
 {
     if (rc->ky_fd >= 0) {
+#ifdef _WIN32
+        closesocket((SOCKET)rc->ky_fd);
+#else
         close(rc->ky_fd);
+#endif
         rc->ky_fd = -1;
     }
     rc->ky_state = KY_DOWN;
@@ -445,7 +455,11 @@ static int rc_ky_write(radio_control_t *rc, const char *cmd)
         return -1;
     }
     len = strlen(cmd);
+#ifdef _WIN32
+    n = send((SOCKET)rc->ky_fd, cmd, (int)len, MSG_NOSIGNAL);
+#else
     n = send(rc->ky_fd, cmd, len, MSG_NOSIGNAL);
+#endif
     if (n < 0 || (size_t)n != len) {
         LOG_WARN("KY send failed: %s", cmd);
         rc_ky_close(rc);
@@ -489,12 +503,34 @@ static int rc_ky_open(radio_control_t *rc)
         rc->ky_next_ms = rc_now_ms() + 2000;
         return -1;
     }
+#ifdef _WIN32
+    {
+        u_long on = 1;
+        (void)flags;
+        ioctlsocket((SOCKET)fd, FIONBIO, &on);
+    }
+#else
     flags = fcntl(fd, F_GETFL, 0);
     if (flags >= 0) {
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
     }
+#endif
     rc_connect = connect(fd, res->ai_addr, res->ai_addrlen);
     freeaddrinfo(res);
+#ifdef _WIN32
+    if (rc_connect < 0) {
+        int werr = WSAGetLastError();
+        if (werr != WSAEWOULDBLOCK && werr != WSAEINPROGRESS) {
+            closesocket((SOCKET)fd);
+            rc->ky_next_ms = rc_now_ms() + 2000;
+            if (!rc->ky_warned) {
+                rc->ky_warned = 1;
+                LOG_WARN("KY CAT connect failed for %s:%d", rc->cat_host, rc->cat_port);
+            }
+            return -1;
+        }
+    }
+#else
     if (rc_connect < 0 && errno != EINPROGRESS) {
         close(fd);
         rc->ky_next_ms = rc_now_ms() + 2000;
@@ -504,6 +540,7 @@ static int rc_ky_open(radio_control_t *rc)
         }
         return -1;
     }
+#endif
     rc->ky_fd = fd;
     rc->ky_state = (rc_connect == 0) ? KY_READY : KY_CONNECTING;
     rc->ky_rx_len = 0;
@@ -529,8 +566,20 @@ static void rc_ky_send_speed(radio_control_t *rc)
 
 static void rc_ky_finish_connect(radio_control_t *rc)
 {
-    struct pollfd pfd;
     int err = 0;
+#ifdef _WIN32
+    WSAPOLLFD pfd;
+    int len = (int)sizeof(err);
+
+    pfd.fd = (SOCKET)rc->ky_fd;
+    pfd.events = POLLOUT;
+    pfd.revents = 0;
+    if (WSAPoll(&pfd, 1, 0) <= 0) {
+        return;
+    }
+    if (getsockopt((SOCKET)rc->ky_fd, SOL_SOCKET, SO_ERROR, (char *)&err, &len) != 0 || err != 0) {
+#else
+    struct pollfd pfd;
     socklen_t len = sizeof(err);
 
     pfd.fd = rc->ky_fd;
@@ -540,6 +589,7 @@ static void rc_ky_finish_connect(radio_control_t *rc)
         return;
     }
     if (getsockopt(rc->ky_fd, SOL_SOCKET, SO_ERROR, &err, &len) < 0 || err != 0) {
+#endif
         LOG_WARN("KY CAT connect failed for %s:%d", rc->cat_host, rc->cat_port);
         rc_ky_close(rc);
         rc->ky_next_ms = rc_now_ms() + 2000;
@@ -559,15 +609,26 @@ static void rc_ky_read(radio_control_t *rc)
     if (rc->ky_fd < 0) {
         return;
     }
+#ifdef _WIN32
+    n = recv((SOCKET)rc->ky_fd, (char *)buf, (int)sizeof(buf), 0);
+#else
     n = recv(rc->ky_fd, buf, sizeof(buf), 0);
+#endif
     if (n == 0) {
         rc_ky_close(rc);
         return;
     }
     if (n < 0) {
+#ifdef _WIN32
+        int werr = WSAGetLastError();
+        if (werr == WSAEWOULDBLOCK || werr == WSAEINPROGRESS) {
+            return;
+        }
+#else
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return;
         }
+#endif
         rc_ky_close(rc);
         return;
     }

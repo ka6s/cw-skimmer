@@ -62,6 +62,19 @@ make; make gui
 
 That builds `bin/cw-skimmer-gui`. Quit a running window and start that binary again after a build. `make` builds the command-line detector and `bin/libcwskimmer_c.so`. `make test`, `make replay`, and `make synth` build the older detector checks.
 
+## Windows 10
+
+The Makefile looks at the compiler (`gcc -dumpmachine`) and at `OS` / `uname`. A MinGW target builds a native Win32 window and does not call Qt. On that host, `make` and `make gui` both write `bin/cw-skimmer-gui.exe`. Linux still uses the commands above.
+
+Build from the MSYS2 **MinGW 64-bit** shell, the one whose prompt says `MINGW64`. The plain MSYS gcc cannot build this window.
+
+```bash
+pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-make mingw-w64-x86_64-pkg-config mingw-w64-x86_64-libwebsockets
+make
+```
+
+Put `cw-skimmer.conf` in the same folder as the exe. The window uses the controls that ship with Windows 10. It has the 48 kHz waterfall, the 10 kHz scroll, the 1 kHz labels, the copy beside the waterfall, click tuning, F1–F5, and the CW keyboard. F1–F5 are saved in `cw-skimmer-fn.ini` next to the exe. Start the radio before Send or a function key. DeepCW and the Linux audio-output picker stay on the Qt build. The line under the waterfall shows the decode for the kilohertz you clicked.
+
 `cw-skimmer.conf` holds the radio, the center frequency (14074000 Hz), the sample rate (48000), `spectrum_span_hz=0` for the wide waterfall, and `multi_decode_channels=48`. `spot_enabled=0`. An empty `training_file` means the live radio. `cw_send=tci` and `cw_wpm=20` are the keyboard defaults. `cat_port=0` leaves Kenwood KY off.
 
 The command-line program still contains the earlier detector, dit/dah decoder, validator, and optional telnet spotting. The copy in the window comes from the spectrum, threshold, mask, Cwsk, and DeepCW decoders above. `make ort` fetches ONNX Runtime into `third_party/onnxruntime` if it is not already there. `make deepcw-test` decodes a synthetic tone with the engine.

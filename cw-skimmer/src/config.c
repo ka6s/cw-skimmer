@@ -2,6 +2,10 @@
 #define _DEFAULT_SOURCE
 #endif
 
+#ifdef _WIN32
+#include "win_compat.h"
+#endif
+
 #include "config.h"
 #include "logger.h"
 #include <stdio.h>
@@ -131,7 +135,6 @@ int config_load_auto(const char *explicit_path, config_t *config) {
     char exe[PATH_MAX];
     char path_exe[PATH_MAX];
     char path_parent[PATH_MAX];
-    ssize_t exe_len;
     const char *candidates[8];
     int count = 0;
 
@@ -142,7 +145,30 @@ int config_load_auto(const char *explicit_path, config_t *config) {
     }
     candidates[count++] = "cw-skimmer.conf";
 
-    exe_len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+#ifdef _WIN32
+    {
+        DWORD n = GetModuleFileNameA(NULL, exe, (DWORD)sizeof(exe));
+        char *slash;
+        char *fwd;
+
+        if (n > 0 && n < (DWORD)sizeof(exe)) {
+            exe[n] = '\0';
+            slash = strrchr(exe, '\\');
+            fwd = strrchr(exe, '/');
+            if (fwd && (!slash || fwd > slash)) {
+                slash = fwd;
+            }
+            if (slash) {
+                *slash = '\0';
+                snprintf(path_exe, sizeof(path_exe), "%s\\cw-skimmer.conf", exe);
+                candidates[count++] = path_exe;
+                snprintf(path_parent, sizeof(path_parent), "%s\\..\\cw-skimmer.conf", exe);
+                candidates[count++] = path_parent;
+            }
+        }
+    }
+#else
+    ssize_t exe_len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
     if (exe_len > 0) {
         char *slash;
 
@@ -156,6 +182,7 @@ int config_load_auto(const char *explicit_path, config_t *config) {
             candidates[count++] = path_parent;
         }
     }
+#endif
 
     for (int i = 0; i < count; i++) {
         if (config_file_exists(candidates[i]) && config_load(candidates[i], config) == 0) {

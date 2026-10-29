@@ -2,11 +2,10 @@
  * @file decodewidget.h
  * @brief CW copy for each 1 kHz spectrum slice, beside the waterfall
  *
- * Each slice that has copied text gets one line, painted on the signal that
- * slice is following. The line stays after the CW stops, including when that
- * signal is also copied in the main Morse window. The line is a window into
- * the decoder buffer: newest characters sit on the right, and the bar under
- * the copy scrolls back through text already colored. No frequency label.
+ * Each 1 kHz slice that has copied text gets one line, painted on that
+ * kilohertz row of the waterfall. The line stays after the CW stops. The
+ * line is a window into the decoder buffer: newest characters sit on the
+ * right, and the bar under the copy scrolls back through text already colored.
  */
 
 #ifndef DECODEWIDGET_H

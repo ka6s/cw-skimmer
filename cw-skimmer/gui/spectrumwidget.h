@@ -7,6 +7,7 @@
 #define SPECTRUMWIDGET_H
 
 #include <QWidget>
+#include <QFont>
 #include <QRect>
 #include <QVector>
 #include <QColor>
@@ -26,6 +27,9 @@ public:
     void appendSpectrumColumns(const QVector<QVector<float>> &columns, float centerFreq, float binWidth);
     float snapOffsetHz(float freqOffsetHz) const;
     void clear();
+
+    /** Face and size of the kilohertz labels to the left of the waterfall. */
+    static QFont frequencyLabelFont();
 
     float centerFrequency() const { return m_centerFrequency; }
     /** +1: RF is center plus the offset. -1: RF is center minus the offset. */
